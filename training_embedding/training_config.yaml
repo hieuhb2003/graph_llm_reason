@@ -1,0 +1,38 @@
+# Model
+teacher_model_name : "BAAI/bge-m3"
+student_model_name : "BAAI/bge-m3"
+
+
+# training config
+
+
+# Dataset
+source_language : ["en"]
+target_language: ["vi"]
+train_dataset: "sentence-transformers/parallel-sentences-talks"
+val_dataset : "sentence-transformers/parallel-sentences-talks"
+max_sentences_per_language : 10000  # Maximum number of  parallel sentences for training
+
+# Training
+output_dir: "output/make-multilingual-"
+student_max_seq_length : 128  # Student model max. lengths for inputs (number of word pieces)
+inference_batch_size : 64 # Batch size at inference
+num_evaluation_steps : 300 # Evaluate performance after every xxxx steps
+
+
+
+## Hyperparameters
+num_train_epochs : 5  # Train for x epochs
+lr: 1e-5
+train_batch_size : 32
+seed: 666
+warmup_proportion: 0.05
+gradient_accumulation_steps: 1
+# mixed_precision: bf16
+
+
+## Logging
+log_steps: 50
+eval_file: "evaluation_results.txt"
+# eval_steps: 10
+# log_with: "wandb" # "wandb" or "tensorboard"
