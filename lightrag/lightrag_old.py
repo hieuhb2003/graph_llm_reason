@@ -38,8 +38,8 @@ from .operate_old import (
     naive_retrieval,
     kg_direct_recall,
     _most_relevant_text_chunks_from_nodes,
-    _most_relevant_text_chunks_from_edges # New function returning (candidates, hl_keywords, ll_keywords)
-
+    _most_relevant_text_chunks_from_edges, # New function returning (candidates, hl_keywords, ll_keywords)
+    enhanced_chunk_retrieval,
 )
 
 
@@ -6022,3 +6022,97 @@ Remember: The sequence of questions must form a clear chain where each answer be
                 results.append({"id": chunk_id, "score": score, "content": "", "metadata": {}})
                 
         return results
+    
+
+########################
+    def retrieve_docs_with_enhanced_method(
+        self,
+        query: str,
+        top_k: int = 5,
+        a: float = 0.7,
+        b: float = 0.3,
+        query_param: QueryParam = None,
+        use_precomputed_data: bool = True,
+        force_use_existing_embeddings: bool = True,
+    ) -> list[dict]:
+        """
+        High-level method to retrieve document chunks using the enhanced retrieval method.
+        
+        Args:
+            query: User's text query
+            top_k: Number of top document chunks to retrieve
+            a: Weight for embedding similarity score
+            b: Weight for average node score 
+            query_param: Parameters controlling the retrieval process
+            use_precomputed_data: Whether to use precomputed data for faster retrieval
+            force_use_existing_embeddings: If True, only use embeddings already in vector database
+            
+        Returns:
+            List of document chunks with their content and relevance scores
+        """
+        loop = always_get_an_event_loop()
+        
+        if query_param is None:
+            query_param = QueryParam(
+                top_k=top_k,
+                mode="local",  # Focus on nodes
+                unique_entity_edge=True
+            )
+        
+        return loop.run_until_complete(
+            self.a_retrieve_docs_with_enhanced_method(
+                query=query,
+                top_k=top_k,
+                a=a,
+                b=b,
+                query_param=query_param,
+                use_precomputed_data=use_precomputed_data,
+                force_use_existing_embeddings=force_use_existing_embeddings
+            )
+        )
+
+    async def a_retrieve_docs_with_enhanced_method(
+        self,
+        query: str,
+        top_k: int = 5,
+        a: float = 0.7,
+        b: float = 0.3,
+        query_param: QueryParam = None,
+        use_precomputed_data: bool = True,
+        force_use_existing_embeddings: bool = True,
+    ) -> list[dict]:
+        """Async version of retrieve_docs_with_enhanced_method"""
+        
+        # Check for precomputed data
+        if use_precomputed_data and not hasattr(self, "_pagerank_precomputed_data"):
+            logger.info("No precomputed data found. Running precomputation now...")
+            await self.precompute_pagerank_data(force_use_existing_embeddings=force_use_existing_embeddings)
+        
+        if query_param is None:
+            query_param = QueryParam(
+                top_k=top_k,
+                mode="local",  # Focus on nodes
+                unique_entity_edge=True
+            )
+        
+        # Set default PageRank configuration if needed
+        global_config = {}  # Add your global config here
+        
+        # Call the enhanced retrieval method
+        result_chunks = await enhanced_chunk_retrieval(
+            query=query,
+            knowledge_graph_inst=self.chunk_entity_relation_graph,
+            entities_vdb=self.entities_vdb,
+            relationships_vdb=self.relationships_vdb,
+            text_chunks_db=self.text_chunks,
+            chunks_vdb=self.chunks_vdb,
+            embedding_func=self.embedding_func,
+            query_param=query_param,
+            global_config=global_config,
+            a=a,
+            b=b,
+            top_k=top_k,
+            use_precomputed_data=use_precomputed_data
+        )
+        
+        return result_chunks

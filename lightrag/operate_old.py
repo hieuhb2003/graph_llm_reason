@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import numpy as np
 import asyncio
 import json
 import re
@@ -3474,3 +3474,548 @@ async def _most_relevant_text_chunks_from_edges(
             return None
 
     return  result["chunk_id"]
+
+# async def enhanced_chunk_retrieval(
+#     query: str,
+#     knowledge_graph_inst: BaseGraphStorage,
+#     entities_vdb: BaseVectorStorage,
+#     relationships_vdb: BaseVectorStorage,
+#     text_chunks_db: BaseKVStorage,
+#     chunks_vdb: BaseVectorStorage,
+#     embedding_func: callable,
+#     query_param: QueryParam,
+#     global_config: dict[str, str],
+#     a: float = 1,  # Weight for embedding similarity
+#     b: float = 0.3,  # Weight for node scores
+#     top_k: int = 10,
+#     hashing_kv: BaseKVStorage | None = None,
+#     use_precomputed_data: bool = True
+# ) -> List[Dict[str, Any]]:
+#     """
+#     Enhances retrieval by combining direct node recall with chunk embedding similarity.
+    
+#     First retrieves good nodes via kg_direct_recall, then extracts all unique chunks from these nodes.
+#     For each chunk, calculates a combined score using:
+#       - Direct embedding similarity with the query
+#       - Average score of all nodes containing the chunk
+    
+#     Args:
+#         query: User's query string
+#         knowledge_graph_inst: Graph storage instance
+#         entities_vdb: Vector database for entities
+#         relationships_vdb: Vector database for relationships
+#         text_chunks_db: KV storage for text chunks
+#         chunks_vdb: Vector database containing chunk embeddings
+#         embedding_func: Function to compute embeddings
+#         query_param: Query parameters
+#         global_config: Global configuration
+#         a: Weight for embedding similarity score
+#         b: Weight for average node score
+#         top_k: Number of chunks to return
+#         hashing_kv: KV storage for keyword caching
+#         use_precomputed_data: Whether to use precomputed embeddings when available
+        
+#     Returns:
+#         List of dictionaries with retrieved chunks and their scores
+#     """
+#     logger.info(f"Starting enhanced chunk retrieval for query: '{query}'")
+    
+#     # Step 1: Get nodes using kg_direct_recall
+#     node_candidates, hl_keywords, ll_keywords = await kg_direct_recall(
+#         query=query,
+#         knowledge_graph_inst=knowledge_graph_inst,
+#         entities_vdb=entities_vdb,
+#         relationships_vdb=relationships_vdb,
+#         text_chunks_db=text_chunks_db,
+#         query_param=query_param,
+#         global_config=global_config,
+#         hashing_kv=hashing_kv
+#     )
+    
+#     # Filter to only get nodes
+#     nodes = [candidate for candidate in node_candidates if candidate.get('retrieval_type') == 'node']
+    
+#     if not nodes:
+#         logger.warning("No node candidates found from kg_direct_recall. Returning empty result.")
+#         return []
+    
+#     logger.info(f"Found {len(nodes)} node candidates from kg_direct_recall")
+    
+#     # Step 2: Collect all unique chunk IDs from the nodes
+#     all_unique_chunk_ids = set()
+#     for node in nodes:
+#         chunk_ids = node.get('all_kg_chunk_ids', [])
+#         all_unique_chunk_ids.update(chunk_ids)
+    
+#     if not all_unique_chunk_ids:
+#         logger.warning("No chunk IDs found in node candidates. Returning empty result.")
+#         return []
+    
+#     logger.info(f"Collected {len(all_unique_chunk_ids)} unique chunk IDs from node candidates")
+#     chunk_ids_list = list(all_unique_chunk_ids)
+    
+#     # Step 3: Get chunk contents
+#     chunk_contents = {}
+#     try:
+#         chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids_list)
+#         for chunk_id, chunk_data in zip(chunk_ids_list, chunk_data_list):
+#             if chunk_data and 'content' in chunk_data:
+#                 chunk_contents[chunk_id] = chunk_data['content']
+#     except Exception as e:
+#         logger.error(f"Error fetching chunk contents: {e}")
+#         return []
+    
+#     logger.info(f"Retrieved contents for {len(chunk_contents)} chunks")
+    
+#     # Step 4: Get chunk similarity scores
+#     chunk_sim_scores = {}
+    
+#     # Create filter for VDB query
+#     filter_lambda = lambda x: x["__id__"] in chunk_ids_list
+    
+#     # Try to use VDB with filter first
+#     vdb_query_success = False
+#     try:
+#         logger.info(f"Querying chunks_vdb with filter for {len(chunk_ids_list)} chunks")
+#         vdb_results = await chunks_vdb.query(
+#             query, 
+#             top_k=len(chunk_ids_list),
+#             filter_lambda=filter_lambda
+#         )
+        
+#         # Process results
+#         for result in vdb_results:
+#             chunk_id = result.get("__id__")
+#             if chunk_id:
+#                 # Convert distance to similarity if needed
+#                 if "distance" in result:
+#                     # For distance metrics (lower is better), convert to similarity
+#                     chunk_sim_scores[chunk_id] = 1.0 - min(1.0, float(result["distance"]))
+#                 elif "score" in result:
+#                     # For similarity metrics (higher is better)
+#                     chunk_sim_scores[chunk_id] = float(result["score"])
+        
+#         if chunk_sim_scores:
+#             vdb_query_success = True
+#             logger.info(f"Successfully retrieved {len(chunk_sim_scores)} chunk scores using VDB filter")
+#     except Exception as e:
+#         logger.error(f"Error querying chunks_vdb with filter: {e}")
+    
+#     # Fall back to manual embedding calculation if VDB query failed
+#     if not vdb_query_success:
+#         logger.info("Falling back to manual embedding calculation")
+        
+#         # Get query embedding
+#         query_embedding = await embedding_func([query])
+#         query_embedding = query_embedding[0]
+        
+#         # Try to get precomputed embeddings first
+#         all_chunk_embeddings = {}
+        
+#         if use_precomputed_data and hasattr(chunks_vdb, "client_storage") and chunks_vdb.client_storage:
+#             storage_data = chunks_vdb.client_storage
+            
+#             if "data" in storage_data and "matrix" in storage_data:
+#                 try:
+#                     # Handle matrix format
+#                     if isinstance(storage_data["matrix"], str):
+#                         import base64
+#                         matrix_data = np.frombuffer(base64.b64decode(storage_data["matrix"]), dtype=np.float32)
+#                         embedding_dim = storage_data.get("embedding_dim", 1024)
+#                         matrix = matrix_data.reshape(-1, embedding_dim)
+#                     else:
+#                         matrix = storage_data["matrix"]
+                    
+#                     # Map embeddings to chunk IDs
+#                     for i, chunk_data in enumerate(storage_data["data"]):
+#                         if i < len(matrix) and "__id__" in chunk_data:
+#                             chunk_id = chunk_data["__id__"]
+#                             if chunk_id in all_unique_chunk_ids:
+#                                 all_chunk_embeddings[chunk_id] = matrix[i]
+                    
+#                     logger.info(f"Loaded {len(all_chunk_embeddings)} precomputed chunk embeddings")
+#                 except Exception as e:
+#                     logger.error(f"Error loading precomputed embeddings: {e}")
+        
+#         # Calculate embeddings for chunks without precomputed embeddings
+#         chunks_to_compute = []
+#         chunks_to_compute_ids = []
+        
+#         for chunk_id in all_unique_chunk_ids:
+#             if chunk_id not in all_chunk_embeddings and chunk_id in chunk_contents:
+#                 chunks_to_compute.append(chunk_contents[chunk_id])
+#                 chunks_to_compute_ids.append(chunk_id)
+        
+#         if chunks_to_compute:
+#             logger.info(f"Computing embeddings for {len(chunks_to_compute)} chunks")
+#             computed_embeddings = await embedding_func(chunks_to_compute)
+            
+#             for i, chunk_id in enumerate(chunks_to_compute_ids):
+#                 all_chunk_embeddings[chunk_id] = computed_embeddings[i]
+        
+#         # Calculate similarity scores manually
+#         def calculate_similarity(vec1, vec2):
+#             """Calculate cosine similarity between two vectors."""
+#             vec1 = np.squeeze(vec1)
+#             vec2 = np.squeeze(vec2)
+#             if vec1.ndim == 0 or vec2.ndim == 0 or vec1.shape[0] != vec2.shape[0]:
+#                 return 0.0
+#             dot_product = np.dot(vec1, vec2)
+#             norm_vec1 = np.linalg.norm(vec1)
+#             norm_vec2 = np.linalg.norm(vec2)
+#             if norm_vec1 == 0 or norm_vec2 == 0:
+#                 return 0.0
+#             return dot_product / (norm_vec1 * norm_vec2)
+        
+#         for chunk_id, chunk_embedding in all_chunk_embeddings.items():
+#             chunk_sim_scores[chunk_id] = calculate_similarity(query_embedding, chunk_embedding)
+    
+#     # Step 5: Calculate node score contributions for each chunk
+#     chunk_node_scores = defaultdict(list)
+    
+#     for node in nodes:
+#         node_score = node.get('score', 0.0)
+#         # Ensure score is positive (higher is better)
+#         if isinstance(node_score, (int, float)) and node_score < 0:
+#             node_score = -node_score
+        
+#         node_chunks = node.get('all_kg_chunk_ids', [])
+        
+#         for chunk_id in node_chunks:
+#             if chunk_id in all_unique_chunk_ids:
+#                 chunk_node_scores[chunk_id].append(node_score)
+    
+#     # Calculate average node score for each chunk
+#     avg_node_scores = {}
+#     for chunk_id, scores in chunk_node_scores.items():
+#         avg_node_scores[chunk_id] = sum(scores) / len(scores) if scores else 0.0
+    
+#     # Step 6: Normalize scores
+#     def normalize_scores(scores):
+#         if not scores:
+#             return {}
+#         values = list(scores.values())
+#         min_val = min(values)
+#         max_val = max(values)
+#         range_val = max_val - min_val
+#         if range_val == 0:
+#             return {k: 1.0 for k in scores}
+#         return {k: (v - min_val) / range_val for k, v in scores.items()}
+    
+#     normalized_sim_scores = normalize_scores(chunk_sim_scores)
+#     normalized_node_scores = normalize_scores(avg_node_scores)
+    
+#     # Step 7: Combine scores using weighted sum
+#     final_scores = {}
+#     for chunk_id in all_unique_chunk_ids:
+#         if chunk_id in normalized_sim_scores and chunk_id in normalized_node_scores:
+#             final_scores[chunk_id] = (
+#                 a * normalized_sim_scores[chunk_id] + 
+#                 b * normalized_node_scores[chunk_id]
+#             )
+    
+#     # Step 8: Get final chunk results with contents
+#     result_chunks = []
+#     for chunk_id, score in sorted(final_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]:
+#         if chunk_id in chunk_contents:
+#             result_chunks.append({
+#                 "id": chunk_id,
+#                 "content": chunk_contents[chunk_id],
+#                 "score": score,
+#                 "embedding_score": normalized_sim_scores.get(chunk_id, 0.0),
+#                 "node_score": normalized_node_scores.get(chunk_id, 0.0)
+#             })
+    
+#     logger.info(f"Enhanced chunk retrieval completed, returning {len(result_chunks)} chunks")
+#     return result_chunks
+
+async def enhanced_chunk_retrieval_direct(
+    query: str,
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    text_chunks_db: BaseKVStorage,
+    chunks_vdb: BaseVectorStorage,
+    embedding_func: callable,
+    a: float = 0.7,  # Weight for chunk-query similarity
+    b: float = 0.3,  # Weight for avg entity score
+    top_k_entities: int = 30,  # Number of top entities to consider
+    top_k_chunks: int = 10,  # Number of top chunks to return
+    use_precomputed_data: bool = True
+) -> List[Dict[str, Any]]:
+    """
+    Enhanced retrieval that directly loads all entities and chunks.
+    
+    Process:
+    1. Calculate similarity between query and all entities
+    2. Select top entities by similarity
+    3. Get all chunks containing these top entities
+    4. For each chunk, calculate:
+       - Similarity between chunk and query (weighted by a)
+       - Average similarity of all entities in that chunk (weighted by b)
+    5. Return top chunks by combined score
+    
+    Args:
+        query: User's query string
+        knowledge_graph_inst: Graph storage instance
+        entities_vdb: Vector database for entities
+        text_chunks_db: KV storage for text chunks
+        chunks_vdb: Vector database for chunks
+        embedding_func: Function to compute embeddings
+        a: Weight for chunk-query similarity
+        b: Weight for average entity score
+        top_k_entities: Number of top entities to consider
+        top_k_chunks: Number of chunks to return
+        use_precomputed_data: Whether to use precomputed embeddings
+        
+    Returns:
+        List of dictionaries with retrieved chunks and their scores
+    """
+    logger.info(f"Starting direct enhanced chunk retrieval for query: '{query}'")
+    
+    # Step 1: Get query embedding
+    query_embedding = await embedding_func([query])
+    query_embedding = query_embedding[0]
+    
+    # Step 2: Get all entity embeddings and compute similarity
+    entity_similarities = {}
+    
+    if use_precomputed_data and hasattr(entities_vdb, "client_storage") and entities_vdb.client_storage:
+        storage_data = entities_vdb.client_storage
+        
+        if "data" in storage_data and "matrix" in storage_data:
+            try:
+                # Handle matrix format
+                if isinstance(storage_data["matrix"], str):
+                    import base64
+                    matrix_data = np.frombuffer(base64.b64decode(storage_data["matrix"]), dtype=np.float32)
+                    embedding_dim = storage_data.get("embedding_dim", 1024)
+                    matrix = matrix_data.reshape(-1, embedding_dim)
+                else:
+                    matrix = storage_data["matrix"]
+                
+                # Define similarity function
+                def calculate_similarity(vec1, vec2):
+                    """Calculate cosine similarity between two vectors."""
+                    vec1 = np.squeeze(vec1)
+                    vec2 = np.squeeze(vec2)
+                    if vec1.ndim == 0 or vec2.ndim == 0 or vec1.shape[0] != vec2.shape[0]:
+                        return 0.0
+                    dot_product = np.dot(vec1, vec2)
+                    norm_vec1 = np.linalg.norm(vec1)
+                    norm_vec2 = np.linalg.norm(vec2)
+                    if norm_vec1 == 0 or norm_vec2 == 0:
+                        return 0.0
+                    return dot_product / (norm_vec1 * norm_vec2)
+                
+                # Calculate similarity for all entities
+                # for i, entity_data in enumerate(storage_data["data"]):
+                #     if i < len(matrix) and "__id__" in entity_data:
+                #         entity_id = entity_data["__id__"]
+                #         entity_embedding = matrix[i]
+                #         similarity = calculate_similarity(query_embedding, entity_embedding)
+                #         entity_similarities[entity_id] = similarity
+                
+                # logger.info(f"Calculated similarity for {len(entity_similarities)} entities")
+                query_norm = np.linalg.norm(query_embedding)
+                if query_norm > 0:
+                    normalized_query = query_embedding / query_norm
+                else:
+                    normalized_query = query_embedding
+                    
+                # Chuẩn hóa ma trận entity embeddings (nếu chưa được chuẩn hóa)
+                # Tính L2 norm cho mỗi dòng (mỗi embedding)
+                norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+                # Tránh chia cho 0
+                norms[norms == 0] = 1.0
+                normalized_matrix = matrix / norms
+                
+                # Tính similarity bằng cách nhân ma trận với query vector
+                # Đây chính là cosine similarity vì các vector đã được chuẩn hóa
+                all_similarities = np.dot(normalized_matrix, normalized_query)
+                
+                # Map các similarities vào entity IDs
+                for i, entity_data in enumerate(storage_data["data"]):
+                    if i < len(all_similarities) and "__id__" in entity_data:
+                        entity_id = entity_data["__id__"]
+                        entity_name = entity_data["entity_name"]
+                        entity_description = entity_data["description"]
+                        entity_similarities[entity_id] = all_similarities[i]
+                        
+                logger.info(f"Calculated similarity for {len(entity_similarities)} entities using matrix multiplication")
+
+            except Exception as e:
+                logger.error(f"Error in matrix multiplication for similarities: {e}")
+                # Fallback to original approach
+                for i, entity_data in enumerate(storage_data["data"]):
+                    if i < len(matrix) and "__id__" in entity_data:
+                        entity_id = entity_data["__id__"]
+                        entity_embedding = matrix[i]
+                        similarity = calculate_similarity(query_embedding, entity_embedding)
+                        entity_similarities[entity_id] = similarity
+    
+    if not entity_similarities:
+        logger.warning("No entity similarities calculated. Falling back to direct VDB query.")
+        try:
+            # Query entities VDB directly
+            entities_results = await entities_vdb.query(query, top_k=top_k_entities)
+            
+            for result in entities_results:
+                entity_id = result.get("__id__")
+                if entity_id:
+                    # For distance metrics (lower is better), convert to similarity
+                    if "distance" in result:
+                        entity_similarities[entity_id] = float(result["distance"])
+                    elif "score" in result:
+                        entity_similarities[entity_id] = float(result["score"])
+            
+            logger.info(f"Retrieved {len(entity_similarities)} entities using VDB query")
+        except Exception as e:
+            logger.error(f"Error querying entities VDB: {e}")
+            return []
+    
+    # Step 3: Sort entities by similarity and get top-k
+    sorted_entities = sorted(entity_similarities.items(), key=lambda x: x[1], reverse=True)
+    top_entities = sorted_entities[:top_k_entities]
+
+    # Step 3.1: Sort entities by similarity and get top-k
+    if not top_entities:
+        logger.warning("No top entities found. Returning empty result.")
+        return []
+    
+
+    logger.info(f"Selected top {len(top_entities)} entities")
+    
+    # Step 4: Get chunks containing these top entities
+    top_entity_ids = [entity_id for entity_id, _ in top_entities]
+    chunks_by_entity = {}
+    
+    for entity_id in top_entity_ids:
+        try:
+            # Find all chunks containing this entity
+            entity_chunks = await knowledge_graph_inst.get_chunks_for_entity(entity_id)
+            chunks_by_entity[entity_id] = entity_chunks
+            logger.debug(f"Entity {entity_id} is found in {len(entity_chunks)} chunks")
+        except Exception as e:
+            logger.error(f"Error getting chunks for entity {entity_id}: {e}")
+            chunks_by_entity[entity_id] = []
+    
+    # Step 5: Gather all unique chunks
+    all_unique_chunk_ids = set()
+    for entity_id, chunks in chunks_by_entity.items():
+        all_unique_chunk_ids.update(chunks)
+    
+    if not all_unique_chunk_ids:
+        logger.warning("No chunks found containing the top entities. Returning empty result.")
+        return []
+    
+    logger.info(f"Found {len(all_unique_chunk_ids)} unique chunks containing top entities")
+    chunk_ids_list = list(all_unique_chunk_ids)
+    
+    # Step 6: Get chunk contents
+    chunk_contents = {}
+    try:
+        chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids_list)
+        for chunk_id, chunk_data in zip(chunk_ids_list, chunk_data_list):
+            if chunk_data and 'content' in chunk_data:
+                chunk_contents[chunk_id] = chunk_data['content']
+    except Exception as e:
+        logger.error(f"Error fetching chunk contents: {e}")
+        return []
+    
+    logger.info(f"Retrieved contents for {len(chunk_contents)} chunks")
+    
+    # Step 7: Calculate chunk similarity to query
+    chunk_sim_scores = {}
+    
+    # Try using chunks VDB first
+    try:
+        filter_lambda = lambda x: x["__id__"] in chunk_ids_list
+        vdb_results = await chunks_vdb.query(query, top_k=len(chunk_ids_list), filter_lambda=filter_lambda)
+        
+        for result in vdb_results:
+            chunk_id = result.get("__id__")
+            if chunk_id:
+                if "distance" in result:
+                    chunk_sim_scores[chunk_id] = 1.0 - min(1.0, float(result["distance"]))
+                elif "score" in result:
+                    chunk_sim_scores[chunk_id] = float(result["score"])
+        
+        logger.info(f"Retrieved similarity for {len(chunk_sim_scores)} chunks using VDB")
+    except Exception as e:
+        logger.error(f"Error querying chunks VDB: {e}")
+    
+    # Calculate missing similarities
+    missing_chunks = [chunk_id for chunk_id in chunk_ids_list if chunk_id not in chunk_sim_scores and chunk_id in chunk_contents]
+    
+    if missing_chunks:
+        logger.info(f"Calculating similarity for {len(missing_chunks)} missing chunks")
+        try:
+            # Get embeddings for missing chunks
+            missing_contents = [chunk_contents[chunk_id] for chunk_id in missing_chunks]
+            missing_embeddings = await embedding_func(missing_contents)
+            
+            for i, chunk_id in enumerate(missing_chunks):
+                similarity = calculate_similarity(query_embedding, missing_embeddings[i])
+                chunk_sim_scores[chunk_id] = similarity
+        except Exception as e:
+            logger.error(f"Error calculating missing chunk similarities: {e}")
+    
+    # Step 8: Map entities to chunks and calculate entity score for each chunk
+    # Create a mapping of chunk_id -> list of entities in that chunk
+    chunk_to_entities = defaultdict(list)
+    
+    for entity_id, chunks in chunks_by_entity.items():
+        for chunk_id in chunks:
+            if chunk_id in all_unique_chunk_ids:
+                chunk_to_entities[chunk_id].append(entity_id)
+    
+    # Calculate average entity similarity score for each chunk
+    chunk_entity_scores = {}
+    for chunk_id, entity_ids in chunk_to_entities.items():
+        entity_scores = [entity_similarities[entity_id] for entity_id in entity_ids if entity_id in entity_similarities]
+        if entity_scores:
+            chunk_entity_scores[chunk_id] = sum(entity_scores) / len(entity_scores)
+        else:
+            chunk_entity_scores[chunk_id] = 0.0
+    
+    # Step 9: Normalize scores
+    def normalize_scores(scores):
+        if not scores:
+            return {}
+        values = list(scores.values())
+        min_val = min(values)
+        max_val = max(values)
+        range_val = max_val - min_val
+        if range_val == 0:
+            return {k: 1.0 for k in scores}
+        return {k: (v - min_val) / range_val for k, v in scores.items()}
+    
+    normalized_chunk_sim = normalize_scores(chunk_sim_scores)
+    normalized_entity_scores = normalize_scores(chunk_entity_scores)
+    
+    # Step 10: Combine scores
+    final_scores = {}
+    for chunk_id in all_unique_chunk_ids:
+        if chunk_id in normalized_chunk_sim and chunk_id in normalized_entity_scores:
+            final_scores[chunk_id] = (
+                a * normalized_chunk_sim[chunk_id] + 
+                b * normalized_entity_scores[chunk_id]
+            )
+    
+    # Step 11: Get final result chunks
+    result_chunks = []
+    sorted_chunks = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)[:top_k_chunks]
+    
+    for chunk_id, score in sorted_chunks:
+        if chunk_id in chunk_contents:
+            result_chunks.append({
+                "id": chunk_id,
+                "content": chunk_contents[chunk_id],
+                "score": score,
+                "chunk_sim": normalized_chunk_sim.get(chunk_id, 0.0),
+                "entity_score": normalized_entity_scores.get(chunk_id, 0.0),
+                "entities": chunk_to_entities.get(chunk_id, [])
+            })
+    
+    logger.info(f"Enhanced direct chunk retrieval completed, returning {len(result_chunks)} chunks")
+    return result_chunks

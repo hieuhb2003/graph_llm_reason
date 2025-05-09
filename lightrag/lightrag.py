@@ -6,7 +6,7 @@ import configparser
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Any, AsyncIterator, Callable, Iterator, cast
+from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, cast
 from sklearn.metrics.pairwise import cosine_similarity  
 import numpy as np        
 import re
@@ -5361,3 +5361,4 @@ class LightRAG:
                 results.append({"id": chunk_id, "score": score, "content": "", "metadata": {}})
                 
         return results
+
