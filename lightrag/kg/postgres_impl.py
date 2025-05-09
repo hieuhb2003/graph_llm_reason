@@ -1077,6 +1077,69 @@ class PGGraphStorage(BaseGraphStorage):
         drop_sql = SQL_TEMPLATES["drop_vdb_relation"]
         await self.db.execute(drop_sql)
 
+    async def get_chunks_for_entity(
+        self, entity_id: str, entity_name: str = ""
+    ) -> list[dict[str, Any]]:
+        """
+        Retrieve all chunks that contain a specific entity using both ID and entity name.
+        
+        In Postgres implementation, this method queries the database to find relationships
+        between entities and chunks, using both entity_id and entity_name to ensure
+        we find all relevant chunks containing the entity.
+        
+        Args:
+            entity_id: The ID of the entity to search for
+            entity_name: The name of the entity (used as a fallback or additional search parameter)
+            
+        Returns:
+            List of dictionaries containing chunk information with at least a 'chunk_id' field
+        """
+        chunks = []
+        try:
+            # First, try to find chunks directly connected to this entity via source_id
+            query1 = """
+            SELECT DISTINCT chunk_id, e.entity_name
+            FROM lightrag_graph_nodes e
+            JOIN lightrag_doc_chunks c ON e.source_chunk_id = c.chunk_id
+            WHERE (e.id = $1 OR e.name = $1) AND e.workspace = $3
+            """
+            
+            # Then, try to find by entity name if provided
+            query2 = """
+            SELECT DISTINCT chunk_id, e.entity_name
+            FROM lightrag_graph_nodes e
+            JOIN lightrag_doc_chunks c ON e.source_chunk_id = c.chunk_id
+            WHERE e.entity_name = $2 AND e.workspace = $3
+            """
+            
+            # Execute both queries
+            results1 = await self.db.fetch(query1, entity_id, entity_name, self.namespace)
+            
+            # Only run the second query if entity_name is provided
+            results2 = []
+            if entity_name:
+                results2 = await self.db.fetch(query2, entity_id, entity_name, self.namespace)
+            
+            # Combine results and remove duplicates
+            seen_chunk_ids = set()
+            
+            for result_set in [results1, results2]:
+                for row in result_set:
+                    chunk_id = row.get("chunk_id")
+                    if chunk_id and chunk_id not in seen_chunk_ids:
+                        seen_chunk_ids.add(chunk_id)
+                        chunks.append({
+                            "chunk_id": chunk_id,
+                            "entity_name": row.get("entity_name", "")
+                        })
+            
+            logger.info(f"Found {len(chunks)} chunks for entity ID {entity_id} and name '{entity_name}'")
+            
+        except Exception as e:
+            logger.error(f"Error getting chunks for entity {entity_id}: {e}")
+            
+        return chunks
+
 
 NAMESPACE_TABLE_MAP = {
     NameSpace.KV_STORE_FULL_DOCS: "LIGHTRAG_DOC_FULL",

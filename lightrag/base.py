@@ -213,6 +213,20 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     ) -> KnowledgeGraph:
         """Retrieve a subgraph of the knowledge graph starting from a given node."""
 
+    @abstractmethod
+    async def get_chunks_for_entity(
+        self, entity_id: str, entity_name: str = ""
+    ) -> list[dict[str, Any]]:
+        """Retrieve all chunks that contain a specific entity using both ID and entity name.
+        
+        Args:
+            entity_id: The ID of the entity to search for
+            entity_name: The name of the entity (used as a fallback if ID hash doesn't match)
+            
+        Returns:
+            List of dictionaries containing chunk information with at least a 'chunk_id' field
+        """
+
 
 class DocStatus(str, Enum):
     """Document processing status"""

@@ -3303,14 +3303,14 @@ async def kg_direct_recall(
 
     # 1. Extract Keywords
     try:
-        cache_keywords = is_query_cached(query,global_config["cache_queries"])
+        # cache_keywords = is_query_cached(query,global_config["cache_queries"])
         if not query_param.use_query_for_retrieval:
             hl_keywords_list, ll_keywords_list = await extract_keywords_only(
                 text=query,
                 param=query_param,
                 global_config=global_config,
                 hashing_kv=hashing_kv,
-                cache_keywords=cache_keywords
+                # cache_keywords=cache_keywords
             )
             hl_keywords_str = ", ".join(hl_keywords_list)
             ll_keywords_str = ", ".join(ll_keywords_list)
@@ -3431,7 +3431,10 @@ async def _most_relevant_text_chunks_from_nodes(
         node: str,
         threshold: int = None
 ):  
-    node_data = await knowledge_graph_inst.get_node_data(node)
+    try: 
+        node_data = await knowledge_graph_inst.get_node_data(node)
+    except:
+        return None
     list_hash_id = [compute_mdhash_id(node + des,prefix="ent-") for des in list(node_data["description"].split("<SEP>"))]
     filter_lambda = lambda x : x["__id__"] in list_hash_id
 
@@ -3454,7 +3457,10 @@ async def _most_relevant_text_chunks_from_edges(
     try:
         edge_data = await knowledge_graph_inst.get_edge_data(head, tgt)
     except:
-        edge_data = await knowledge_graph_inst.get_edge_data(tgt,head)
+        try:
+            edge_data = await knowledge_graph_inst.get_edge_data(tgt, head)
+        except:
+            return None
 
     list_hash_id = [compute_mdhash_id(head + tgt + des,prefix="rel-") for des in list(edge_data["description"].split("<SEP>"))]
     list_hash_id_reverse = [compute_mdhash_id(tgt + head + des,prefix="rel-") for des in list(edge_data["description"].split("<SEP>"))]
@@ -3590,7 +3596,7 @@ async def _most_relevant_text_chunks_from_edges(
 #                 # Convert distance to similarity if needed
 #                 if "distance" in result:
 #                     # For distance metrics (lower is better), convert to similarity
-#                     chunk_sim_scores[chunk_id] = 1.0 - min(1.0, float(result["distance"]))
+#                     chunk_sim_scores[chunk_id] = float(result["distance"])
 #                 elif "score" in result:
 #                     # For similarity metrics (higher is better)
 #                     chunk_sim_scores[chunk_id] = float(result["score"])
@@ -3729,6 +3735,7 @@ async def _most_relevant_text_chunks_from_edges(
 #     logger.info(f"Enhanced chunk retrieval completed, returning {len(result_chunks)} chunks")
 #     return result_chunks
 
+
 async def enhanced_chunk_retrieval_direct(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -3736,6 +3743,8 @@ async def enhanced_chunk_retrieval_direct(
     text_chunks_db: BaseKVStorage,
     chunks_vdb: BaseVectorStorage,
     embedding_func: callable,
+    chunk_dict,
+    doc_dict,
     a: float = 0.7,  # Weight for chunk-query similarity
     b: float = 0.3,  # Weight for avg entity score
     top_k_entities: int = 30,  # Number of top entities to consider
@@ -3833,28 +3842,43 @@ async def enhanced_chunk_retrieval_direct(
                 # Đây chính là cosine similarity vì các vector đã được chuẩn hóa
                 all_similarities = np.dot(normalized_matrix, normalized_query)
                 
-                # Map các similarities vào entity IDs
+                # Map các similarities vào entity IDs và lưu thêm entity_name và description
+                entity_info = {}  # Dictionary to store entity information
                 for i, entity_data in enumerate(storage_data["data"]):
                     if i < len(all_similarities) and "__id__" in entity_data:
                         entity_id = entity_data["__id__"]
                         entity_name = entity_data["entity_name"]
                         entity_description = entity_data["description"]
                         entity_similarities[entity_id] = all_similarities[i]
+                        # Store entity name and description for later use
+                        entity_info[entity_id] = {"name": entity_name, "description": entity_description}
+                        
+                        # Debug: show how entity ID is calculated from name and description
+                        logger.debug(f"Entity ID '{entity_id}' is for entity named '{entity_name}'")
                         
                 logger.info(f"Calculated similarity for {len(entity_similarities)} entities using matrix multiplication")
 
             except Exception as e:
                 logger.error(f"Error in matrix multiplication for similarities: {e}")
                 # Fallback to original approach
+                entity_info = {}  # Dictionary to store entity information
                 for i, entity_data in enumerate(storage_data["data"]):
                     if i < len(matrix) and "__id__" in entity_data:
                         entity_id = entity_data["__id__"]
+                        entity_name = entity_data["entity_name"]
+                        entity_description = entity_data["description"]
                         entity_embedding = matrix[i]
                         similarity = calculate_similarity(query_embedding, entity_embedding)
                         entity_similarities[entity_id] = similarity
+                        # Store entity name and description for later use
+                        entity_info[entity_id] = {"name": entity_name, "description": entity_description}
+                        
+                        # Debug: show how entity ID is calculated from name and description
+                        logger.debug(f"Entity ID '{entity_id}' is for entity named '{entity_name}'")
     
     if not entity_similarities:
         logger.warning("No entity similarities calculated. Falling back to direct VDB query.")
+        entity_info = {}  # Dictionary to store entity information
         try:
             # Query entities VDB directly
             entities_results = await entities_vdb.query(query, top_k=top_k_entities)
@@ -3862,6 +3886,14 @@ async def enhanced_chunk_retrieval_direct(
             for result in entities_results:
                 entity_id = result.get("__id__")
                 if entity_id:
+                    # Store entity name and description
+                    entity_name = result.get("entity_name", "")
+                    entity_description = result.get("description", "")
+                    entity_info[entity_id] = {"name": entity_name, "description": entity_description}
+                    
+                    # Debug: show how entity ID is calculated from name and description
+                    logger.debug(f"Entity ID '{entity_id}' is for entity named '{entity_name}'")
+                    
                     # For distance metrics (lower is better), convert to similarity
                     if "distance" in result:
                         entity_similarities[entity_id] = float(result["distance"])
@@ -3888,11 +3920,15 @@ async def enhanced_chunk_retrieval_direct(
     # Step 4: Get chunks containing these top entities
     top_entity_ids = [entity_id for entity_id, _ in top_entities]
     chunks_by_entity = {}
+    all_chunks = set()  # To track unique chunks
     
     for entity_id in top_entity_ids:
         try:
             # Find all chunks containing this entity
-            entity_chunks = await knowledge_graph_inst.get_chunks_for_entity(entity_id)
+            entity_name = entity_info[entity_id]["name"]
+            node_data = await knowledge_graph_inst.get_node_data(entity_name)
+            entity_chunks = [chunk for chunk in list(node_data["source_id"].split("<SEP>"))]
+            # entity_chunks = await knowledge_graph_inst.get_chunks_for_entity(list_hash_id)
             chunks_by_entity[entity_id] = entity_chunks
             logger.debug(f"Entity {entity_id} is found in {len(entity_chunks)} chunks")
         except Exception as e:
@@ -3936,7 +3972,7 @@ async def enhanced_chunk_retrieval_direct(
             chunk_id = result.get("__id__")
             if chunk_id:
                 if "distance" in result:
-                    chunk_sim_scores[chunk_id] = 1.0 - min(1.0, float(result["distance"]))
+                    chunk_sim_scores[chunk_id] = float(result["distance"])
                 elif "score" in result:
                     chunk_sim_scores[chunk_id] = float(result["score"])
         
@@ -4008,9 +4044,13 @@ async def enhanced_chunk_retrieval_direct(
     
     for chunk_id, score in sorted_chunks:
         if chunk_id in chunk_contents:
+            doc_id = chunk_dict[chunk_id]['full_doc_id']
+            doc_content = doc_dict[doc_id]['content']
             result_chunks.append({
                 "id": chunk_id,
-                "content": chunk_contents[chunk_id],
+                "chunk_content": chunk_contents[chunk_id],
+                "doc_id": doc_id,
+                "doc_content": doc_content,
                 "score": score,
                 "chunk_sim": normalized_chunk_sim.get(chunk_id, 0.0),
                 "entity_score": normalized_entity_scores.get(chunk_id, 0.0),

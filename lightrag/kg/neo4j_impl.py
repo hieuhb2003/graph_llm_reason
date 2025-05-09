@@ -665,3 +665,105 @@ class Neo4JStorage(BaseGraphStorage):
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
         raise NotImplementedError
+        
+    async def get_chunks_for_entity(
+        self, entity_id: str, entity_name: str = ""
+    ) -> list[dict[str, Any]]:
+        """
+        Retrieve all chunks that contain a specific entity using both ID and entity name.
+        
+        In Neo4j implementation, this method tries to:
+        1. First search for chunks connected to the entity by its ID
+        2. If entity_name is provided, also search for nodes that match the name
+           (useful for cases where the ID is a hash of entity_name + description)
+        
+        Args:
+            entity_id: The ID of the entity to search for
+            entity_name: The name of the entity (used as a fallback if ID hash doesn't match)
+            
+        Returns:
+            List of dictionaries containing chunk information with at least a 'chunk_id' field
+        """
+        chunks = []
+        try:
+            # Clean up entity_id to use as a Neo4j label
+            entity_label = entity_id.strip('"')
+            
+            async with self._driver.session(database=self._DATABASE) as session:
+                # Try different query strategies
+                
+                # 1. First attempt: look for direct connections between entity and chunks
+                query1 = f"""
+                MATCH (entity:`{entity_label}`)-[r]-(chunk)
+                WHERE exists(chunk.chunk_id) OR exists(chunk.source_id)
+                RETURN DISTINCT 
+                    CASE 
+                        WHEN exists(chunk.chunk_id) THEN chunk.chunk_id 
+                        ELSE chunk.source_id 
+                    END AS chunk_id,
+                    chunk
+                """
+                
+                result1 = await session.run(query1)
+                records1 = await result1.data()
+                
+                # 2. Second attempt: find nodes with properties matching entity attributes
+                query2 = f"""
+                MATCH (n)
+                WHERE n.entity_id = '{entity_id}' OR n.id = '{entity_id}'
+                WITH n
+                MATCH (n)-[r]-(chunk)
+                WHERE exists(chunk.chunk_id) OR exists(chunk.source_id)
+                RETURN DISTINCT 
+                    CASE 
+                        WHEN exists(chunk.chunk_id) THEN chunk.chunk_id 
+                        ELSE chunk.source_id 
+                    END AS chunk_id,
+                    chunk
+                """
+                
+                result2 = await session.run(query2)
+                records2 = await result2.data()
+                
+                # 3. If entity_name is provided, try to find nodes by name
+                records3 = []
+                if entity_name:
+                    query3 = f"""
+                    MATCH (n)
+                    WHERE n.name = '{entity_name}' OR n.entity_name = '{entity_name}'
+                    WITH n
+                    MATCH (n)-[r]-(chunk)
+                    WHERE exists(chunk.chunk_id) OR exists(chunk.source_id)
+                    RETURN DISTINCT 
+                        CASE 
+                            WHEN exists(chunk.chunk_id) THEN chunk.chunk_id 
+                            ELSE chunk.source_id 
+                        END AS chunk_id,
+                        chunk
+                    """
+                    
+                    result3 = await session.run(query3)
+                    records3 = await result3.data()
+                
+                # Combine results, keeping track of unique chunk IDs
+                seen_chunk_ids = set()
+                for records in [records1, records2, records3]:
+                    for record in records:
+                        chunk_id = record.get("chunk_id")
+                        if chunk_id and chunk_id not in seen_chunk_ids:
+                            seen_chunk_ids.add(chunk_id)
+                            
+                            # Convert all node properties to a dict
+                            chunk_data = dict(record.get("chunk", {}))
+                            
+                            # Ensure chunk_id is included
+                            chunk_data["chunk_id"] = chunk_id
+                            
+                            chunks.append(chunk_data)
+                            
+            logger.info(f"Found {len(chunks)} chunks for entity ID {entity_id} and name '{entity_name}'")
+            
+        except Exception as e:
+            logger.error(f"Error getting chunks for entity {entity_id}: {e}")
+            
+        return chunks

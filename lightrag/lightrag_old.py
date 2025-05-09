@@ -39,7 +39,8 @@ from .operate_old import (
     kg_direct_recall,
     _most_relevant_text_chunks_from_nodes,
     _most_relevant_text_chunks_from_edges, # New function returning (candidates, hl_keywords, ll_keywords)
-    enhanced_chunk_retrieval,
+    # enhanced_chunk_retrieval,
+    enhanced_chunk_retrieval_direct
 )
 
 
@@ -5259,7 +5260,7 @@ Remember: The sequence of questions must form a clear chain where each answer be
             return [query]
 
 
-# ######################### Page Rank
+# ######################### Page Rank #############################
     async def precompute_pagerank_data(self, force_use_existing_embeddings=False):
         """
         Precompute and cache necessary data for PageRank retrieval to avoid
@@ -5290,24 +5291,46 @@ Remember: The sequence of questions must form a clear chain where each answer be
             self._pagerank_precomputed_data["graph"] = G_nx
         
         # 2. Prepare all_chunk_data dictionary
-        all_chunk_data = {}
-        chunks =  self.get_all_chunks()
+        # all_chunk_data = {}
+        # chunks =  self.get_all_chunks()
         
-        # Process all chunks and cache entity relationships
-        for chunk_id, chunk in chunks.items():
-            # Get entities in this chunk from the graph
-            entity_ids_in_chunk = await self.get_entities_in_chunk(chunk_id)
+        # # Process all chunks and cache entity relationships
+        # for chunk_id, chunk in chunks.items():
+        #     # Get entities in this chunk from the graph
+        #     entity_ids_in_chunk = await self.get_entities_in_chunk(chunk_id)
             
+        #     all_chunk_data[chunk_id] = {
+        #         "content": chunk.get("content", ""),
+        #         "entity_ids_in_chunk": entity_ids_in_chunk
+        #     }
+
+        all_chunk_data = {}
+        chunks = self.get_all_chunks()
+        
+        # Chuẩn bị danh sách các coroutines để xử lý song song
+        tasks = []
+        chunk_ids = []
+        
+        for chunk_id in chunks.keys():
+            chunk_ids.append(chunk_id)
+            tasks.append(self.get_entities_in_chunk(chunk_id))
+        
+        # Thực thi tất cả các truy vấn entities cùng lúc 
+        results = await asyncio.gather(*tasks)
+        
+        # Xử lý kết quả
+        for i, chunk_id in enumerate(chunk_ids):
             all_chunk_data[chunk_id] = {
-                "content": chunk.get("content", ""),
-                "entity_ids_in_chunk": entity_ids_in_chunk
+                "content": chunks[chunk_id].get("content", ""),
+                "entity_ids_in_chunk": results[i]
             }
         
+
         self._pagerank_precomputed_data["all_chunk_data"] = all_chunk_data
         
         # 3. Precompute edge/fact embeddings
         logger.info("Precomputing edge embeddings...")
-        all_facts_with_embeddings = await self._compute_all_fact_embeddings(G_nx)
+        all_facts_with_embeddings = await self._compute_all_fact_node_embeddings(G_nx)
         
         # Nếu force_use_existing_embeddings = True, chỉ giữ lại các edges có embedding trong vector database
         if force_use_existing_embeddings:
@@ -5379,6 +5402,7 @@ Remember: The sequence of questions must form a clear chain where each answer be
         Lấy embeddings cho tất cả facts/edges trong đồ thị.
         Ưu tiên lấy từ vector database nếu có sẵn, chỉ tính toán khi cần thiết.
         """
+
         all_embeddings = {}
         edge_texts = []
         edge_ids = []
@@ -5441,6 +5465,78 @@ Remember: The sequence of questions must form a clear chain where each answer be
             # Map edge IDs to embeddings
             for i, edge_id in enumerate(edge_ids):
                 all_embeddings[edge_id] = embeddings[i]
+        
+        return all_embeddings
+
+    async def _compute_all_fact_node_embeddings(self, G_nx):
+        """
+        Lấy embeddings cho tất cả facts/edges trong đồ thị.
+        Ưu tiên lấy từ vector database nếu có sẵn, chỉ tính toán khi cần thiết.
+        """
+
+        all_embeddings = {}
+        edge_texts = []
+        edge_ids = []
+        edges_to_compute = []  # Danh sách các edges cần tính toán lại
+        
+        logger.info("Getting fact embeddings from entities_vdb where available")
+        
+        # Kiểm tra xem relationships_vdb có dữ liệu không
+        if hasattr(self.entities_vdb, "client_storage") and self.entities_vdb.client_storage:
+            # Lấy ma trận embedding từ vector database
+            storage_data = self.entities_vdb.client_storage
+            
+            # Lấy tất cả relationship embeddings từ vector database
+            entities_embeddings = {}
+            if "data" in storage_data and "matrix" in storage_data:
+                try:
+                    # Đọc matrix từ chuỗi base64 (nếu lưu dạng này)
+                    if isinstance(storage_data["matrix"], str):
+                        import base64
+                        matrix_data = np.frombuffer(base64.b64decode(storage_data["matrix"]), dtype=np.float32)
+                        embedding_dim = storage_data.get("embedding_dim", 1024)
+                        matrix = matrix_data.reshape(-1, embedding_dim)
+                    else:
+                        matrix = storage_data["matrix"]
+                    
+                    # Map các embeddings vào relationship IDs
+                    for i, rel_data in enumerate(storage_data["data"]):
+                        if i < len(matrix):
+                            # Tạo edge_id tương tự như cách chúng ta tạo trong graph
+                            entity_name = rel_data["entity_name"]
+                            des = rel_data["description"]
+                            entity_name_des = (entity_name, des)  # Đảm bảo ID nhất quán cho đồ thị vô hướng
+                            # Lưu embedding cho edge này
+                            entities_embeddings[entity_name_des] = matrix[i]
+                    
+                    logger.info(f"Loaded {len(entities_embeddings)} embeddings from entities_vdb")
+                except Exception as e:
+                    logger.error(f"Error loading relationship embeddings from vector database: {e}")
+        
+        # # Duyệt qua tất cả edges trong đồ thị
+        # for u, v in G_nx.edges():
+        #     edge_id = tuple(sorted((u, v)))  # Đảm bảo ID nhất quán cho đồ thị vô hướng
+            
+        #     # Nếu đã có sẵn embedding cho edge này trong vector database
+        #     if edge_id in relationship_embeddings:
+        #         all_embeddings[edge_id] = relationship_embeddings[edge_id]
+        #     else:
+        #         # Nếu không có sẵn, chuẩn bị để tính toán
+        #         edge_text = f"Relation between {u} and {v}"
+        #         edge_texts.append(edge_text)
+        #         edge_ids.append(edge_id)
+        #         edges_to_compute.append((u, v))
+        
+        # # Tính toán embeddings cho các edges còn lại nếu cần
+        # if edge_texts:
+        #     logger.info(f"Computing embeddings for {len(edge_texts)} edges that are not in vector database")
+        #     embeddings = await self.embedding_func(edge_texts)
+            
+        # Map edge IDs to embeddings
+        # for i, edge_id in enumerate(edge_ids):
+        #     all_embeddings[edge_id] = embeddings[i]
+
+        all_embeddings = entities_embeddings
         
         return all_embeddings
 
@@ -5597,7 +5693,7 @@ Remember: The sequence of questions must form a clear chain where each answer be
                     "entity_ids_in_chunk": entity_ids_in_chunk
                 }
             
-            all_facts_with_embeddings = await self._compute_all_fact_embeddings(G_nx)
+            all_facts_with_embeddings = await self._compute_all_fact_node_embeddings(G_nx)
             all_passage_ids = list(all_chunk_data.keys())
             all_passage_embeddings_map = await self._compute_all_passage_embeddings(all_chunk_data, all_passage_ids)
             synonym_data = {}  # Placeholder
@@ -5659,12 +5755,17 @@ Remember: The sequence of questions must form a clear chain where each answer be
             fact_contribution_scores = {fact_id: score for fact_id, score in top_k_candidate_facts_with_scores}
             normalized_fact_contribution_scores = min_max_normalize_dict_scores(fact_contribution_scores)
             
+            count = 0
             for fact_id, normalized_score in normalized_fact_contribution_scores.items():
                 u, v = fact_id
                 if u in personalization_vector:
                     personalization_vector[u] += normalized_score
-                if v in personalization_vector:
-                    personalization_vector[v] += normalized_score
+                # if v in personalization_vector:
+                #     personalization_vector[v] += normalized_score
+        logger.info(f"Number of nodes: {len([k for k, v in personalization_vector.items() if v > 0.0])}")
+        for k, v in personalization_vector.items():
+            if v > 0.0:
+                logger.info(f"Node: {k} - {v}")
         logger.info("Weights from facts added to personalization vector.")
         
         # 3b. Add weights from Passage DPR scores
@@ -5698,6 +5799,7 @@ Remember: The sequence of questions must form a clear chain where each answer be
         
         # Normalize personalization vector
         current_sum = sum(personalization_vector.values())
+        print(current_sum)
         if current_sum > 1e-9:
             personalization_vector = {k: v / current_sum for k, v in personalization_vector.items()}
         else:
@@ -5713,6 +5815,9 @@ Remember: The sequence of questions must form a clear chain where each answer be
         alpha = 1.0 - config.get('damping_factor', 0.5)
         logger.info(f"Running Personalized PageRank with alpha={alpha:.2f}...")
         
+
+        sorted_personalization = sorted(list(personalization_vector.items()), key=lambda item: item[1], reverse=True)
+        print(sorted_personalization[:10])
         if not G_nx.nodes():
             logger.warning("Graph is empty, cannot run PageRank.")
             return []
@@ -5722,7 +5827,7 @@ Remember: The sequence of questions must form a clear chain where each answer be
                 G_nx,
                 alpha=alpha,
                 personalization=personalization_vector,
-                weight='weight',
+                weight=None,
                 tol=1.0e-6,
                 max_iter=100
             )
@@ -5732,13 +5837,15 @@ Remember: The sequence of questions must form a clear chain where each answer be
                 G_nx, 
                 alpha=alpha, 
                 personalization=personalization_vector, 
-                weight='weight', 
+                weight=None, 
                 tol=1.0e-4, 
                 max_iter=500
             )
         
         logger.info("PageRank scores calculated for entity nodes.")
         
+        sorted_ppr_scores = sorted(list(ppr_scores.items()), key=lambda item: item[1], reverse=True)
+        print(sorted_ppr_scores[:10])
         # 5. Map PPR Entity Scores to Chunks and Rank Chunks
         chunk_final_scores = defaultdict(float)
         
@@ -5747,7 +5854,9 @@ Remember: The sequence of questions must form a clear chain where each answer be
             entities_in_this_chunk = chunk_detail.get('entity_ids_in_chunk', [])
             
             if not entities_in_this_chunk:
-                score_for_this_chunk = normalized_dpr_scores.get(chunk_id, 0.0) * config.get('dpr_only_chunk_factor', 0.1)
+                # score_for_this_chunk = normalized_dpr_scores.get(chunk_id, 0.0) * config.get('dpr_only_chunk_factor', 0.1)
+                score_for_this_chunk = 0
+
             else:
                 num_entities_in_chunk_in_graph = 0
                 for entity_id in entities_in_this_chunk:
@@ -5759,10 +5868,14 @@ Remember: The sequence of questions must form a clear chain where each answer be
                     score_for_this_chunk /= num_entities_in_chunk_in_graph
             
             # Add a portion of DPR score directly to chunk score
-            score_for_this_chunk += normalized_dpr_scores.get(chunk_id, 0.0) * config.get('direct_dpr_to_chunk_weight', 0.05)
+            # score_for_this_chunk += normalized_dpr_scores.get(chunk_id, 0.0) * config.get('direct_dpr_to_chunk_weight', 0.05)
+            score_for_this_chunk += 0
             chunk_final_scores[chunk_id] = score_for_this_chunk
         
         sorted_chunks = sorted(chunk_final_scores.items(), key=lambda item: item[1], reverse=True)
+        for chunk_id, score in sorted_chunks[:15]:
+            print(normalized_dpr_scores.get(chunk_id, 0.0) * config.get('direct_dpr_to_chunk_weight', 0.05))
+            print(f"Entities in the chunks{all_chunk_data[chunk_id].get('entity_ids_in_chunk', [])}")
         logger.info("PPR scores mapped to chunks and chunks ranked.")
         
         # 6. Return top N chunks
@@ -6022,14 +6135,106 @@ Remember: The sequence of questions must form a clear chain where each answer be
                 results.append({"id": chunk_id, "score": score, "content": "", "metadata": {}})
                 
         return results
-    
 
 ########################
+    # def retrieve_docs_with_enhanced_method(
+    #     self,
+    #     query: str,
+    #     top_k: int = 50,
+    #     a: float = 0.7,
+    #     b: float = 0.3,
+    #     query_param: QueryParam = None,
+    #     use_precomputed_data: bool = True,
+    #     force_use_existing_embeddings: bool = True,
+    # ) -> list[dict]:
+    #     """
+    #     High-level method to retrieve document chunks using the enhanced retrieval method.
+        
+    #     Args:
+    #         query: User's text query
+    #         top_k: Number of top document chunks to retrieve
+    #         a: Weight for embedding similarity score
+    #         b: Weight for average node score 
+    #         query_param: Parameters controlling the retrieval process
+    #         use_precomputed_data: Whether to use precomputed data for faster retrieval
+    #         force_use_existing_embeddings: If True, only use embeddings already in vector database
+            
+    #     Returns:
+    #         List of document chunks with their content and relevance scores
+    #     """
+    #     loop = always_get_an_event_loop()
+        
+    #     if query_param is None:
+    #         query_param = QueryParam(
+    #             top_k=top_k,
+    #             mode="local",  # Focus on nodes
+    #             unique_entity_edge=False
+    #         )
+        
+    #     return loop.run_until_complete(
+    #         self.a_retrieve_docs_with_enhanced_method(
+    #             query=query,
+    #             top_k=top_k,
+    #             a=a,
+    #             b=b,
+    #             query_param=query_param,
+    #             use_precomputed_data=use_precomputed_data,
+    #             force_use_existing_embeddings=force_use_existing_embeddings
+    #         )
+    #     )
+
+    # async def a_retrieve_docs_with_enhanced_method(
+    #     self,
+    #     query: str,
+    #     top_k: int = 5,
+    #     a: float = 0.7,
+    #     b: float = 0.3,
+    #     query_param: QueryParam = None,
+    #     use_precomputed_data: bool = True,
+    #     force_use_existing_embeddings: bool = True,
+    # ) -> list[dict]:
+    #     """Async version of retrieve_docs_with_enhanced_method"""
+        
+    #     # Check for precomputed data
+    #     if use_precomputed_data and not hasattr(self, "_pagerank_precomputed_data"):
+    #         logger.info("No precomputed data found. Running precomputation now...")
+    #         await self.precompute_pagerank_data(force_use_existing_embeddings=force_use_existing_embeddings)
+        
+    #     if query_param is None:
+    #         query_param = QueryParam(
+    #             top_k=top_k,
+    #             mode="local",  # Focus on nodes
+    #             unique_entity_edge=True
+    #         )
+        
+    #     # Set default PageRank configuration if needed
+    #     global_config = {}  # Add your global config here
+        
+    #     # Call the enhanced retrieval method
+    #     result_chunks = await enhanced_chunk_retrieval(
+    #         query=query,
+    #         knowledge_graph_inst=self.chunk_entity_relation_graph,
+    #         entities_vdb=self.entities_vdb,
+    #         relationships_vdb=self.relationships_vdb,
+    #         text_chunks_db=self.text_chunks,
+    #         chunks_vdb=self.chunks_vdb,
+    #         embedding_func=self.embedding_func,
+    #         query_param=query_param,
+    #         global_config=global_config,
+    #         a=a,
+    #         b=b,
+    #         top_k=top_k,
+    #         use_precomputed_data=use_precomputed_data
+    #     )
+        
+    #     return result_chunks
+    
+
     def retrieve_docs_with_enhanced_method(
         self,
         query: str,
         top_k: int = 5,
-        a: float = 0.7,
+        a: float = 1,
         b: float = 0.3,
         query_param: QueryParam = None,
         use_precomputed_data: bool = True,
@@ -6065,7 +6270,7 @@ Remember: The sequence of questions must form a clear chain where each answer be
                 top_k=top_k,
                 a=a,
                 b=b,
-                query_param=query_param,
+                # query_param=query_param,
                 use_precomputed_data=use_precomputed_data,
                 force_use_existing_embeddings=force_use_existing_embeddings
             )
@@ -6084,9 +6289,9 @@ Remember: The sequence of questions must form a clear chain where each answer be
         """Async version of retrieve_docs_with_enhanced_method"""
         
         # Check for precomputed data
-        if use_precomputed_data and not hasattr(self, "_pagerank_precomputed_data"):
-            logger.info("No precomputed data found. Running precomputation now...")
-            await self.precompute_pagerank_data(force_use_existing_embeddings=force_use_existing_embeddings)
+        # if use_precomputed_data and not hasattr(self, "_pagerank_precomputed_data"):
+        #     logger.info("No precomputed data found. Running precomputation now...")
+        #     await self.precompute_pagerank_data(force_use_existing_embeddings=force_use_existing_embeddings)
         
         if query_param is None:
             query_param = QueryParam(
@@ -6099,19 +6304,22 @@ Remember: The sequence of questions must form a clear chain where each answer be
         global_config = {}  # Add your global config here
         
         # Call the enhanced retrieval method
-        result_chunks = await enhanced_chunk_retrieval(
+        result_chunks = await enhanced_chunk_retrieval_direct(
             query=query,
             knowledge_graph_inst=self.chunk_entity_relation_graph,
             entities_vdb=self.entities_vdb,
-            relationships_vdb=self.relationships_vdb,
+            # relationships_vdb=self.relationships_vdb,
             text_chunks_db=self.text_chunks,
             chunks_vdb=self.chunks_vdb,
             embedding_func=self.embedding_func,
-            query_param=query_param,
-            global_config=global_config,
+            chunk_dict = self.text_chunks._data,
+            doc_dict= self.full_docs._data,
+            # query_param=query_param,
+            # global_config=global_config,
             a=a,
             b=b,
-            top_k=top_k,
+            top_k_entities=top_k,
+            top_k_chunks=top_k,
             use_precomputed_data=use_precomputed_data
         )
         
