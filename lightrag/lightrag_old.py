@@ -347,7 +347,10 @@ class LightRAG:
     """
 
     embedding_func: EmbeddingFunc | None = None
-    """Function for computing text embeddings. Must be set before use."""
+    """Function for computing text embeddings for chunks. Must be set before use."""
+    
+    entity_embedding_func: EmbeddingFunc | None = None
+    """Function for computing embeddings for entities and edges. If None, embedding_func will be used."""
 
     embedding_batch_num: int = 32
     """Batch size for embedding computations."""
@@ -459,17 +462,26 @@ class LightRAG:
             self.cache_queries_file = os.path.join(self.working_dir, "cache_queries.json")
         
         import json
-        self.cache_queries =  {}
-        with open(self.cache_queries_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line_dict = json.loads(line)
-                self.cache_queries.update(line_dict)
+        self.cache_queries = {}
+        
+        if os.path.exists(self.cache_queries_file):
+            try:
+                with open(self.cache_queries_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line_dict = json.loads(line)
+                        self.cache_queries.update(line_dict)
+            except:
+                pass
 
 
         if not os.path.exists(self.cache_queries_file):
             with open(self.cache_queries_file, 'w', encoding='utf-8'):
                 pass
 
+        # If entity_embedding_func is not provided, use the main embedding_func for both
+        if self.entity_embedding_func is None:
+            self.entity_embedding_func = self.embedding_func
+            logger.info("Using main embedding_func for entities and edges as entity_embedding_func was not provided")
         
 
         logger.setLevel(self.log_level)
@@ -509,9 +521,13 @@ class LightRAG:
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
-        # Init LLM
+        # Apply concurrent call limits to embedding functions
         self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(  # type: ignore
             self.embedding_func
+        )
+        
+        self.entity_embedding_func = limit_async_func_call(self.embedding_func_max_async)(  # type: ignore
+            self.entity_embedding_func
         )
 
         # Initialize all storages
@@ -560,7 +576,7 @@ class LightRAG:
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION
             ),
-            embedding_func=self.embedding_func,
+            embedding_func=self.entity_embedding_func,  # Use entity_embedding_func for the graph
         )
 
         if self.embedding_func_name and check_exist_embedding_func(self.embedding_func_name, self.working_dir):
@@ -569,21 +585,21 @@ class LightRAG:
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.VECTOR_STORE_ENTITIES + "_" + self.embedding_func_name
             ),
-            embedding_func=self.embedding_func,
+            embedding_func=self.entity_embedding_func,  # Use entity_embedding_func for entities
             meta_fields={"entity_name"},
         )
             self.relationships_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
                 namespace=make_namespace(
                     self.namespace_prefix, NameSpace.VECTOR_STORE_RELATIONSHIPS+ "_" + self.embedding_func_name
                 ),
-                embedding_func=self.embedding_func,
+                embedding_func=self.entity_embedding_func,  # Use entity_embedding_func for relationships
                 meta_fields={"src_id", "tgt_id"},
             )
             self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
                 namespace=make_namespace(
                     self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS+ "_" + self.embedding_func_name
                 ),
-                embedding_func=self.embedding_func,
+                embedding_func=self.embedding_func,  # Use main embedding_func for chunks
             )
 
         else:
@@ -592,21 +608,21 @@ class LightRAG:
                 namespace=make_namespace(
                     self.namespace_prefix, NameSpace.VECTOR_STORE_ENTITIES
                 ),
-                embedding_func=self.embedding_func,
+                embedding_func=self.entity_embedding_func,  # Use entity_embedding_func for entities
                 meta_fields={"entity_name"},
             )
             self.relationships_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
                 namespace=make_namespace(
                     self.namespace_prefix, NameSpace.VECTOR_STORE_RELATIONSHIPS
                 ),
-                embedding_func=self.embedding_func,
+                embedding_func=self.entity_embedding_func,  # Use entity_embedding_func for relationships
                 meta_fields={"src_id", "tgt_id"},
             )
             self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
                 namespace=make_namespace(
                     self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS
                 ),
-                embedding_func=self.embedding_func,
+                embedding_func=self.embedding_func,  # Use main embedding_func for chunks
             )
 
         # Initialize document status storage
@@ -6325,6 +6341,7 @@ Remember: The sequence of questions must form a clear chain where each answer be
             text_chunks_db=self.text_chunks,
             chunks_vdb=self.chunks_vdb,
             embedding_func=self.embedding_func,
+            entity_embedding_func=self.entity_embedding_func,  # Use specialized embedding for entities/edges
             chunk_dict = self.text_chunks._data,
             doc_dict= self.full_docs._data,
             # query_param=query_param,

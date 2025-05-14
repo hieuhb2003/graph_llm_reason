@@ -1680,12 +1680,13 @@ async def _get_node_data_list_des(
     # text_units_section_list = [["id", "content", "score"]]
     # for i, (t,s,e) in enumerate(use_text_units):
     #     text_units_section_list.append([i, t["content"], s,e])
-    # text_units_context = list_of_list_to_csv([[x[0], x[1]] for x in text_units_section_list])
-
     # text_units_section_list = [["id", "content"]]
     # for i, t in enumerate(use_text_units):
     #     text_units_section_list.append([i, t["content"]])
-    # text_units_context = list_of_list_to_csv(text_units_section_list)
+    # text_units_section_list = [["id", "content", "score"]]
+    # for i, (t,s,e) in enumerate(use_text_units):
+    #     text_units_sectio
+    text_units_context = list_of_list_to_csv([[x[0], x[1]] for x in text_units_section_list])
     return entities_context, relations_context, text_units_context,text_units_section_list,all_text_units_each_entity
 
 async def _find_most_related_text_unit_from_entities(
@@ -4016,7 +4017,8 @@ async def enhanced_chunk_retrieval_direct(
     relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     chunks_vdb: BaseVectorStorage,
-    embedding_func: callable,
+    embedding_func: callable,  # Main embedding function for chunks
+    entity_embedding_func: callable = None,  # Specialized embedding function for entities/edges
     chunk_dict,
     doc_dict,
     a: float = 0.3,  # Weight for chunk-query similarity
@@ -4028,7 +4030,7 @@ async def enhanced_chunk_retrieval_direct(
     use_precomputed_data: bool = True,
     relevance_threshold = 0.7,
     method = None,
-    predefined_candidates: Dict[str, Dict] = None  # New parameter for user-defined candidates
+    predefined_candidates: Dict[str, Dict] = None  # For user-defined candidates
 ) -> List[Dict[str, Any]]:
     """
     Enhanced retrieval that directly loads all entities, edges, and chunks.
@@ -4052,6 +4054,7 @@ async def enhanced_chunk_retrieval_direct(
         text_chunks_db: KV storage for text chunks
         chunks_vdb: Vector database for chunks
         embedding_func: Function to compute embeddings
+        entity_embedding_func: Function to compute embeddings for entities/edges
         chunk_dict: Dictionary of chunk information
         doc_dict: Dictionary of document information
         a: Weight for chunk-query similarity
@@ -4068,7 +4071,17 @@ async def enhanced_chunk_retrieval_direct(
     """
     logger.info(f"Starting direct enhanced chunk retrieval for query: '{query}'")
     
-    # Step 1: Get query embedding
+    # Use entity_embedding_func if provided, otherwise use main embedding_func
+    if entity_embedding_func is None:
+        entity_embedding_func = embedding_func
+        logger.info("Using main embedding_func for entities and edges as entity_embedding_func was not provided")
+    
+    # Get query embeddings with both embedding functions
+    # For entities and edges
+    entity_query_embedding = await entity_embedding_func([query])
+    entity_query_embedding = entity_query_embedding[0]
+    
+    # For chunks (using the main embedding function)
     query_embedding = await embedding_func([query])
     query_embedding = query_embedding[0]
     
@@ -4103,11 +4116,12 @@ async def enhanced_chunk_retrieval_direct(
                         return 0.0
                     return dot_product / (norm_vec1 * norm_vec2)
                 
-                query_norm = np.linalg.norm(query_embedding)
+                # Use entity_query_embedding for entity similarity
+                query_norm = np.linalg.norm(entity_query_embedding)
                 if query_norm > 0:
-                    normalized_query = query_embedding / query_norm
+                    normalized_query = entity_query_embedding / query_norm
                 else:
-                    normalized_query = query_embedding
+                    normalized_query = entity_query_embedding
                     
                 # Chuẩn hóa ma trận entity embeddings (nếu chưa được chuẩn hóa)
                 # Tính L2 norm cho mỗi dòng (mỗi embedding)
@@ -4146,7 +4160,8 @@ async def enhanced_chunk_retrieval_direct(
                         entity_name = entity_data["entity_name"]
                         entity_description = entity_data["description"]
                         entity_embedding = matrix[i]
-                        similarity = calculate_similarity(query_embedding, entity_embedding)
+                        # Use entity_query_embedding for entity similarity
+                        similarity = calculate_similarity(entity_query_embedding, entity_embedding)
                         entity_similarities[entity_id] = similarity
                         # Store entity name and description for later use
                         entity_info[entity_id] = {"name": entity_name, "description": entity_description}
@@ -4230,11 +4245,12 @@ async def enhanced_chunk_retrieval_direct(
                     matrix = storage_data["matrix"]
                 
                 # Calculate similarity for all edges using matrix multiplication
-                query_norm = np.linalg.norm(query_embedding)
+                # Use entity_query_embedding for edge similarity
+                query_norm = np.linalg.norm(entity_query_embedding)
                 if query_norm > 0:
-                    normalized_query = query_embedding / query_norm
+                    normalized_query = entity_query_embedding / query_norm
                 else:
-                    normalized_query = query_embedding
+                    normalized_query = entity_query_embedding
                 
                 norms = np.linalg.norm(matrix, axis=1, keepdims=True)
                 norms[norms == 0] = 1.0
