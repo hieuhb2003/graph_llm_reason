@@ -6241,7 +6241,8 @@ Remember: The sequence of questions must form a clear chain where each answer be
         use_precomputed_data: bool = True,
         force_use_existing_embeddings: bool = True,
         threshold: float = 0.7,
-        method = None
+        method = None,
+        predefined_candidates: Dict[str, Dict] = None  # New parameter for user-defined candidates
     ) -> list[dict]:
         """
         High-level method to retrieve document chunks using the enhanced retrieval method.
@@ -6254,6 +6255,7 @@ Remember: The sequence of questions must form a clear chain where each answer be
             query_param: Parameters controlling the retrieval process
             use_precomputed_data: Whether to use precomputed data for faster retrieval
             force_use_existing_embeddings: If True, only use embeddings already in vector database
+            predefined_candidates: Dictionary containing user-defined entities and edges with scores
             
         Returns:
             List of document chunks with their content and relevance scores
@@ -6278,7 +6280,8 @@ Remember: The sequence of questions must form a clear chain where each answer be
                 use_precomputed_data=use_precomputed_data,
                 force_use_existing_embeddings=force_use_existing_embeddings,
                 method = method,
-                threshold=threshold
+                threshold=threshold,
+                predefined_candidates=predefined_candidates  # Add the predefined candidates parameter
             )
         )
 
@@ -6293,7 +6296,8 @@ Remember: The sequence of questions must form a clear chain where each answer be
         use_precomputed_data: bool = True,
         force_use_existing_embeddings: bool = True,
         method=None,
-        threshold: float = 0.7
+        threshold: float = 0.7,
+        predefined_candidates: Dict[str, Dict] = None  # New parameter for user-defined candidates
     ) -> list[dict]:
         """Async version of retrieve_docs_with_enhanced_method"""
         
@@ -6333,7 +6337,8 @@ Remember: The sequence of questions must form a clear chain where each answer be
             top_k_chunks=top_k,
             use_precomputed_data=use_precomputed_data,
             method=method,
-            relevance_threshold=threshold
+            relevance_threshold=threshold,
+            predefined_candidates=predefined_candidates  # Add the predefined candidates parameter
         )
         
         return result_chunks

@@ -4028,6 +4028,7 @@ async def enhanced_chunk_retrieval_direct(
     use_precomputed_data: bool = True,
     relevance_threshold = 0.7,
     method = None,
+    predefined_candidates: Dict[str, Dict] = None  # New parameter for user-defined candidates
 ) -> List[Dict[str, Any]]:
     """
     Enhanced retrieval that directly loads all entities, edges, and chunks.
@@ -4060,6 +4061,7 @@ async def enhanced_chunk_retrieval_direct(
         top_k_edges: Number of top edges to consider
         top_k_chunks: Number of chunks to return
         use_precomputed_data: Whether to use precomputed embeddings
+        predefined_candidates: Dictionary containing user-defined entities and edges with scores
         
     Returns:
         List of dictionaries with retrieved chunks and their scores
@@ -4181,6 +4183,23 @@ async def enhanced_chunk_retrieval_direct(
             logger.error(f"Error querying entities VDB: {e}")
             return []
     
+    # Add predefined entities if provided
+    if predefined_candidates and "entities" in predefined_candidates:
+        for entity_id, entity_data in predefined_candidates["entities"].items():
+            if entity_id in entity_similarities:
+                # Use max of calculated score and predefined score
+                entity_similarities[entity_id] = max(entity_similarities[entity_id], entity_data["score"])
+            else:
+                # Add this predefined entity to our candidates
+                entity_similarities[entity_id] = entity_data["score"]
+                # Also add entity info if not already present
+                if entity_id not in entity_info:
+                    entity_info[entity_id] = {
+                        "name": entity_data["name"],
+                        "description": entity_data["description"]
+                    }
+                    logger.debug(f"Added predefined entity ID '{entity_id}' with name '{entity_data['name']}'")
+    
     # Step 3: Sort entities by similarity and get top-k
     sorted_entities = sorted(entity_similarities.items(), key=lambda x: x[1], reverse=True)
     top_entities = sorted_entities[:top_k_entities]
@@ -4274,6 +4293,24 @@ async def enhanced_chunk_retrieval_direct(
     sorted_edges = sorted(edge_similarities.items(), key=lambda x: x[1], reverse=True)
     top_edges = sorted_edges[:top_k_edges]
     logger.info(f"Selected top {len(top_edges)} edges")
+    
+    # Add predefined edges if provided
+    if predefined_candidates and "edges" in predefined_candidates:
+        for edge_id, edge_data in predefined_candidates["edges"].items():
+            if edge_id in edge_similarities:
+                # Use max of calculated score and predefined score
+                edge_similarities[edge_id] = max(edge_similarities[edge_id], edge_data["score"])
+            else:
+                # Add this predefined edge to our candidates
+                edge_similarities[edge_id] = edge_data["score"]
+                # Also add edge info if not already present
+                if edge_id not in edge_info:
+                    edge_info[edge_id] = {
+                        "src_id": edge_data["src_id"],
+                        "tgt_id": edge_data["tgt_id"],
+                        "description": edge_data.get("description", "")
+                    }
+                    logger.debug(f"Added predefined edge ID '{edge_id}'")
     
     # Step 5: Get chunks containing these top entities
     top_entity_ids = [entity_id for entity_id, _ in top_entities]
