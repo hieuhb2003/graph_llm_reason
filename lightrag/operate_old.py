@@ -3480,8 +3480,8 @@ async def _most_relevant_text_chunks_from_edges(
             return None
 
     return  result["chunk_id"]
-
-# async def enhanced_chunk_retrieval(
+######### greatest result
+# async def enhanced_chunk_retrieval_direct(
 #     query: str,
 #     knowledge_graph_inst: BaseGraphStorage,
 #     entities_vdb: BaseVectorStorage,
@@ -3489,21 +3489,31 @@ async def _most_relevant_text_chunks_from_edges(
 #     text_chunks_db: BaseKVStorage,
 #     chunks_vdb: BaseVectorStorage,
 #     embedding_func: callable,
-#     query_param: QueryParam,
-#     global_config: dict[str, str],
-#     a: float = 1,  # Weight for embedding similarity
-#     b: float = 0.3,  # Weight for node scores
-#     top_k: int = 10,
-#     hashing_kv: BaseKVStorage | None = None,
-#     use_precomputed_data: bool = True
+#     chunk_dict,
+#     doc_dict,
+#     a: float = 0.3,  # Weight for chunk-query similarity
+#     b: float = 0.5,  # Weight for entity score
+#     c: float = 0.5,  # Weight for edge score
+#     top_k_entities: int = 200,  # Number of top entities to consider
+#     top_k_edges: int = 200,    # Number of top edges to consider
+#     top_k_chunks: int = 100,  # Number of top chunks to return
+#     use_precomputed_data: bool = True,
+#     relevance_threshold = 0.7,
+#     method = None,
 # ) -> List[Dict[str, Any]]:
 #     """
-#     Enhances retrieval by combining direct node recall with chunk embedding similarity.
+#     Enhanced retrieval that directly loads all entities, edges, and chunks.
     
-#     First retrieves good nodes via kg_direct_recall, then extracts all unique chunks from these nodes.
-#     For each chunk, calculates a combined score using:
-#       - Direct embedding similarity with the query
-#       - Average score of all nodes containing the chunk
+#     Process:
+#     1. Calculate similarity between query and all entities
+#     2. Calculate similarity between query and all edges
+#     3. Select top entities and edges by similarity
+#     4. Get all chunks containing these top entities and edges
+#     5. For each chunk, calculate combined score using:
+#        - Similarity between chunk and query (weighted by a)
+#        - Sum of entity scores in that chunk (weighted by b)
+#        - Sum of edge scores in that chunk (weighted by c)
+#     6. Return top chunks by combined score
     
 #     Args:
 #         query: User's query string
@@ -3511,56 +3521,306 @@ async def _most_relevant_text_chunks_from_edges(
 #         entities_vdb: Vector database for entities
 #         relationships_vdb: Vector database for relationships
 #         text_chunks_db: KV storage for text chunks
-#         chunks_vdb: Vector database containing chunk embeddings
+#         chunks_vdb: Vector database for chunks
 #         embedding_func: Function to compute embeddings
-#         query_param: Query parameters
-#         global_config: Global configuration
-#         a: Weight for embedding similarity score
-#         b: Weight for average node score
-#         top_k: Number of chunks to return
-#         hashing_kv: KV storage for keyword caching
-#         use_precomputed_data: Whether to use precomputed embeddings when available
+#         chunk_dict: Dictionary of chunk information
+#         doc_dict: Dictionary of document information
+#         a: Weight for chunk-query similarity
+#         b: Weight for entity score
+#         c: Weight for edge score
+#         top_k_entities: Number of top entities to consider
+#         top_k_edges: Number of top edges to consider
+#         top_k_chunks: Number of chunks to return
+#         use_precomputed_data: Whether to use precomputed embeddings
         
 #     Returns:
 #         List of dictionaries with retrieved chunks and their scores
 #     """
-#     logger.info(f"Starting enhanced chunk retrieval for query: '{query}'")
+#     logger.info(f"Starting direct enhanced chunk retrieval for query: '{query}'")
     
-#     # Step 1: Get nodes using kg_direct_recall
-#     node_candidates, hl_keywords, ll_keywords = await kg_direct_recall(
-#         query=query,
-#         knowledge_graph_inst=knowledge_graph_inst,
-#         entities_vdb=entities_vdb,
-#         relationships_vdb=relationships_vdb,
-#         text_chunks_db=text_chunks_db,
-#         query_param=query_param,
-#         global_config=global_config,
-#         hashing_kv=hashing_kv
-#     )
+#     # Step 1: Get query embedding
+#     query_embedding = await embedding_func([query])
+#     query_embedding = query_embedding[0]
     
-#     # Filter to only get nodes
-#     nodes = [candidate for candidate in node_candidates if candidate.get('retrieval_type') == 'node']
+#     # Step 2: Get all entity embeddings and compute similarity
+#     entity_similarities = {}
     
-#     if not nodes:
-#         logger.warning("No node candidates found from kg_direct_recall. Returning empty result.")
+#     if use_precomputed_data and hasattr(entities_vdb, "client_storage") and entities_vdb.client_storage:
+#         storage_data = entities_vdb.client_storage
+        
+#         if "data" in storage_data and "matrix" in storage_data:
+#             try:
+#                 # Handle matrix format
+#                 if isinstance(storage_data["matrix"], str):
+#                     import base64
+#                     matrix_data = np.frombuffer(base64.b64decode(storage_data["matrix"]), dtype=np.float32)
+#                     embedding_dim = storage_data.get("embedding_dim", 1024)
+#                     matrix = matrix_data.reshape(-1, embedding_dim)
+#                 else:
+#                     matrix = storage_data["matrix"]
+                
+#                 # Define similarity function
+#                 def calculate_similarity(vec1, vec2):
+#                     """Calculate cosine similarity between two vectors."""
+#                     vec1 = np.squeeze(vec1)
+#                     vec2 = np.squeeze(vec2)
+#                     if vec1.ndim == 0 or vec2.ndim == 0 or vec1.shape[0] != vec2.shape[0]:
+#                         return 0.0
+#                     dot_product = np.dot(vec1, vec2)
+#                     norm_vec1 = np.linalg.norm(vec1)
+#                     norm_vec2 = np.linalg.norm(vec2)
+#                     if norm_vec1 == 0 or norm_vec2 == 0:
+#                         return 0.0
+#                     return dot_product / (norm_vec1 * norm_vec2)
+                
+#                 query_norm = np.linalg.norm(query_embedding)
+#                 if query_norm > 0:
+#                     normalized_query = query_embedding / query_norm
+#                 else:
+#                     normalized_query = query_embedding
+                    
+#                 # Chuẩn hóa ma trận entity embeddings (nếu chưa được chuẩn hóa)
+#                 # Tính L2 norm cho mỗi dòng (mỗi embedding)
+#                 norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+#                 # Tránh chia cho 0
+#                 norms[norms == 0] = 1.0
+#                 normalized_matrix = matrix / norms
+                
+#                 # Tính similarity bằng cách nhân ma trận với query vector
+#                 # Đây chính là cosine similarity vì các vector đã được chuẩn hóa
+#                 all_similarities = np.dot(normalized_matrix, normalized_query)
+                
+#                 # Map các similarities vào entity IDs và lưu thêm entity_name và description
+#                 entity_info = {}  # Dictionary to store entity information
+#                 for i, entity_data in enumerate(storage_data["data"]):
+#                     if i < len(all_similarities) and "__id__" in entity_data:
+#                         entity_id = entity_data["__id__"]
+#                         entity_name = entity_data["entity_name"]
+#                         entity_description = entity_data["description"]
+#                         entity_similarities[entity_id] = all_similarities[i]
+#                         # Store entity name and description for later use
+#                         entity_info[entity_id] = {"name": entity_name, "description": entity_description}
+                        
+#                         # Debug: show how entity ID is calculated from name and description
+#                         logger.debug(f"Entity ID '{entity_id}' is for entity named '{entity_name}'")
+                        
+#                 logger.info(f"Calculated similarity for {len(entity_similarities)} entities using matrix multiplication")
+
+#             except Exception as e:
+#                 logger.error(f"Error in matrix multiplication for similarities: {e}")
+#                 # Fallback to original approach
+#                 entity_info = {}  # Dictionary to store entity information
+#                 for i, entity_data in enumerate(storage_data["data"]):
+#                     if i < len(matrix) and "__id__" in entity_data:
+#                         entity_id = entity_data["__id__"]
+#                         entity_name = entity_data["entity_name"]
+#                         entity_description = entity_data["description"]
+#                         entity_embedding = matrix[i]
+#                         similarity = calculate_similarity(query_embedding, entity_embedding)
+#                         entity_similarities[entity_id] = similarity
+#                         # Store entity name and description for later use
+#                         entity_info[entity_id] = {"name": entity_name, "description": entity_description}
+                        
+#                         # Debug: show how entity ID is calculated from name and description
+#                         logger.debug(f"Entity ID '{entity_id}' is for entity named '{entity_name}'")
+    
+#     if not entity_similarities:
+#         logger.warning("No entity similarities calculated. Falling back to direct VDB query.")
+#         entity_info = {}  # Dictionary to store entity information
+#         try:
+#             # Query entities VDB directly
+#             entities_results = await entities_vdb.query(query, top_k=top_k_entities)
+            
+#             for result in entities_results:
+#                 entity_id = result.get("__id__")
+#                 if entity_id:
+#                     # Store entity name and description
+#                     entity_name = result.get("entity_name", "")
+#                     entity_description = result.get("description", "")
+#                     entity_info[entity_id] = {"name": entity_name, "description": entity_description}
+                    
+#                     # Debug: show how entity ID is calculated from name and description
+#                     logger.debug(f"Entity ID '{entity_id}' is for entity named '{entity_name}'")
+                    
+#                     # For distance metrics (lower is better), convert to similarity
+#                     if "distance" in result:
+#                         entity_similarities[entity_id] = float(result["distance"])
+#                     elif "score" in result:
+#                         entity_similarities[entity_id] = float(result["score"])
+            
+#             logger.info(f"Retrieved {len(entity_similarities)} entities using VDB query")
+#         except Exception as e:
+#             logger.error(f"Error querying entities VDB: {e}")
+#             return []
+    
+#     # Step 3: Sort entities by similarity and get top-k
+#     sorted_entities = sorted(entity_similarities.items(), key=lambda x: x[1], reverse=True)
+#     top_entities = sorted_entities[:top_k_entities]
+
+#     if not top_entities:
+#         logger.warning("No top entities found. Returning empty result.")
 #         return []
     
-#     logger.info(f"Found {len(nodes)} node candidates from kg_direct_recall")
+#     logger.info(f"Selected top {len(top_entities)} entities")
     
-#     # Step 2: Collect all unique chunk IDs from the nodes
+#     # Step 4: Get edge similarities (relationships)
+#     edge_similarities = {}
+#     edge_info = {}
+    
+#     # Use similar approach to get edge similarities
+#     if use_precomputed_data and hasattr(relationships_vdb, "client_storage") and relationships_vdb.client_storage:
+#         storage_data = relationships_vdb.client_storage
+        
+#         if "data" in storage_data and "matrix" in storage_data:
+#             try:
+#                 # Handle matrix format
+#                 if isinstance(storage_data["matrix"], str):
+#                     import base64
+#                     matrix_data = np.frombuffer(base64.b64decode(storage_data["matrix"]), dtype=np.float32)
+#                     embedding_dim = storage_data.get("embedding_dim", 1024)
+#                     matrix = matrix_data.reshape(-1, embedding_dim)
+#                 else:
+#                     matrix = storage_data["matrix"]
+                
+#                 # Calculate similarity for all edges using matrix multiplication
+#                 query_norm = np.linalg.norm(query_embedding)
+#                 if query_norm > 0:
+#                     normalized_query = query_embedding / query_norm
+#                 else:
+#                     normalized_query = query_embedding
+                
+#                 norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+#                 norms[norms == 0] = 1.0
+#                 normalized_matrix = matrix / norms
+                
+#                 all_similarities = np.dot(normalized_matrix, normalized_query)
+                
+#                 for i, edge_data in enumerate(storage_data["data"]):
+#                     if i < len(all_similarities) and "__id__" in edge_data:
+#                         edge_id = edge_data["__id__"]
+#                         src_id = edge_data.get("src_id", "")
+#                         tgt_id = edge_data.get("tgt_id", "")
+#                         edge_description = edge_data.get("description", "")
+#                         edge_similarities[edge_id] = all_similarities[i]
+#                         edge_info[edge_id] = {
+#                             "src_id": src_id,
+#                             "tgt_id": tgt_id,
+#                             "description": edge_description
+#                         }
+                
+#                 logger.info(f"Calculated similarity for {len(edge_similarities)} edges using matrix multiplication")
+#             except Exception as e:
+#                 logger.error(f"Error calculating edge similarities: {e}")
+    
+#     # If no edges found from precomputed data, query the VDB directly
+#     if not edge_similarities:
+#         logger.warning("No edge similarities calculated from precomputed data. Querying VDB directly.")
+#         try:
+#             # Query relationships VDB directly
+#             relationships_results = await relationships_vdb.query(query, top_k=top_k_edges)
+            
+#             for result in relationships_results:
+#                 edge_id = result.get("__id__")
+#                 if edge_id:
+#                     # Store edge information
+#                     src_id = result.get("src_id", "")
+#                     tgt_id = result.get("tgt_id", "")
+#                     edge_description = result.get("description", "")
+#                     edge_info[edge_id] = {
+#                         "src_id": src_id,
+#                         "tgt_id": tgt_id,
+#                         "description": edge_description
+#                     }
+                    
+#                     # For distance metrics (lower is better), convert to similarity
+#                     if "distance" in result:
+#                         edge_similarities[edge_id] = float(result["distance"])
+#                     elif "score" in result:
+#                         edge_similarities[edge_id] = float(result["score"])
+            
+#             logger.info(f"Retrieved {len(edge_similarities)} edges using VDB query")
+#         except Exception as e:
+#             logger.error(f"Error querying relationships VDB: {e}")
+    
+#     # Sort edges by similarity and get top-k
+#     sorted_edges = sorted(edge_similarities.items(), key=lambda x: x[1], reverse=True)
+#     top_edges = sorted_edges[:top_k_edges]
+#     logger.info(f"Selected top {len(top_edges)} edges")
+    
+#     # Step 5: Get chunks containing these top entities
+#     top_entity_ids = [entity_id for entity_id, _ in top_entities]
+#     chunks_by_entity = {}
+    
+#     for entity_id in top_entity_ids:
+#         try:
+#             # Find all chunks containing this entity
+#             entity_name = entity_info[entity_id]["name"]
+#             node_data = await knowledge_graph_inst.get_node_data(entity_name)
+#             entity_chunks = [chunk for chunk in list(node_data["source_id"].split("<SEP>")) if chunk]
+#             chunks_by_entity[entity_id] = entity_chunks
+#             logger.debug(f"Entity {entity_id} is found in {len(entity_chunks)} chunks")
+#         except Exception as e:
+#             logger.error(f"Error getting chunks for entity {entity_id}: {e}")
+#             chunks_by_entity[entity_id] = []
+    
+#     # Step 6: Get chunks containing these top edges
+#     top_edge_ids = [edge_id for edge_id, _ in top_edges]
+#     chunks_by_edge = {}
+    
+#     for edge_id in top_edge_ids:
+#         try:
+#             if edge_id in edge_info:
+#                 src_id = edge_info[edge_id]["src_id"]
+#                 tgt_id = edge_info[edge_id]["tgt_id"]
+                
+#                 # Get edge data to find chunks
+#                 try:
+#                     edge_data = await knowledge_graph_inst.get_edge_data(src_id, tgt_id)
+#                     if "source_id" in edge_data:
+#                         edge_chunks = [chunk for chunk in list(edge_data["source_id"].split("<SEP>")) if chunk]
+#                         chunks_by_edge[edge_id] = edge_chunks
+#                         logger.debug(f"Edge {edge_id} is found in {len(edge_chunks)} chunks")
+#                     else:
+#                         logger.warning(f"No source_id found for edge {edge_id}")
+#                         chunks_by_edge[edge_id] = []
+#                 except Exception as e:
+#                     logger.error(f"Error getting edge data for {src_id}->{tgt_id}: {e}")
+#                     # Try reverse direction
+#                     try:
+#                         edge_data = await knowledge_graph_inst.get_edge_data(tgt_id, src_id)
+#                         if "source_id" in edge_data:
+#                             edge_chunks = [chunk for chunk in list(edge_data["source_id"].split("<SEP>")) if chunk]
+#                             chunks_by_edge[edge_id] = edge_chunks
+#                             logger.debug(f"Edge {edge_id} (reverse) is found in {len(edge_chunks)} chunks")
+#                         else:
+#                             logger.warning(f"No source_id found for edge {edge_id} (reverse)")
+#                             chunks_by_edge[edge_id] = []
+#                     except Exception as e2:
+#                         logger.error(f"Error getting edge data for reverse direction {tgt_id}->{src_id}: {e2}")
+#                         chunks_by_edge[edge_id] = []
+#         except Exception as e:
+#             logger.error(f"Error getting chunks for edge {edge_id}: {e}")
+#             chunks_by_edge[edge_id] = []
+    
+#     # Step 7: Gather all unique chunks from both entities and edges
 #     all_unique_chunk_ids = set()
-#     for node in nodes:
-#         chunk_ids = node.get('all_kg_chunk_ids', [])
-#         all_unique_chunk_ids.update(chunk_ids)
+    
+#     # Add chunks from entities
+#     for entity_id, chunks in chunks_by_entity.items():
+#         all_unique_chunk_ids.update(chunks)
+    
+#     # Add chunks from edges
+#     for edge_id, chunks in chunks_by_edge.items():
+#         all_unique_chunk_ids.update(chunks)
     
 #     if not all_unique_chunk_ids:
-#         logger.warning("No chunk IDs found in node candidates. Returning empty result.")
+#         logger.warning("No chunks found containing top entities or edges. Returning empty result.")
 #         return []
     
-#     logger.info(f"Collected {len(all_unique_chunk_ids)} unique chunk IDs from node candidates")
+#     logger.info(f"Found {len(all_unique_chunk_ids)} unique chunks from entities and edges")
 #     chunk_ids_list = list(all_unique_chunk_ids)
     
-#     # Step 3: Get chunk contents
+#     # Step 8: Get chunk contents
 #     chunk_contents = {}
 #     try:
 #         chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids_list)
@@ -3573,130 +3833,105 @@ async def _most_relevant_text_chunks_from_edges(
     
 #     logger.info(f"Retrieved contents for {len(chunk_contents)} chunks")
     
-#     # Step 4: Get chunk similarity scores
+#     # Step 9: Calculate chunk similarity to query
 #     chunk_sim_scores = {}
     
-#     # Create filter for VDB query
-#     filter_lambda = lambda x: x["__id__"] in chunk_ids_list
-    
-#     # Try to use VDB with filter first
-#     vdb_query_success = False
+#     # Try using chunks VDB first
 #     try:
-#         logger.info(f"Querying chunks_vdb with filter for {len(chunk_ids_list)} chunks")
-#         vdb_results = await chunks_vdb.query(
-#             query, 
-#             top_k=len(chunk_ids_list),
-#             filter_lambda=filter_lambda
-#         )
+#         filter_lambda = lambda x: x["__id__"] in chunk_ids_list
+#         vdb_results = await chunks_vdb.query(query, top_k=len(chunk_ids_list), filter_lambda=filter_lambda)
         
-#         # Process results
 #         for result in vdb_results:
 #             chunk_id = result.get("__id__")
 #             if chunk_id:
-#                 # Convert distance to similarity if needed
 #                 if "distance" in result:
-#                     # For distance metrics (lower is better), convert to similarity
 #                     chunk_sim_scores[chunk_id] = float(result["distance"])
 #                 elif "score" in result:
-#                     # For similarity metrics (higher is better)
 #                     chunk_sim_scores[chunk_id] = float(result["score"])
         
-#         if chunk_sim_scores:
-#             vdb_query_success = True
-#             logger.info(f"Successfully retrieved {len(chunk_sim_scores)} chunk scores using VDB filter")
+#         logger.info(f"Retrieved similarity for {len(chunk_sim_scores)} chunks using VDB")
 #     except Exception as e:
-#         logger.error(f"Error querying chunks_vdb with filter: {e}")
+#         logger.error(f"Error querying chunks VDB: {e}")
     
-#     # Fall back to manual embedding calculation if VDB query failed
-#     if not vdb_query_success:
-#         logger.info("Falling back to manual embedding calculation")
-        
-#         # Get query embedding
-#         query_embedding = await embedding_func([query])
-#         query_embedding = query_embedding[0]
-        
-#         # Try to get precomputed embeddings first
-#         all_chunk_embeddings = {}
-        
-#         if use_precomputed_data and hasattr(chunks_vdb, "client_storage") and chunks_vdb.client_storage:
-#             storage_data = chunks_vdb.client_storage
+#     # Calculate missing similarities
+#     missing_chunks = [chunk_id for chunk_id in chunk_ids_list if chunk_id not in chunk_sim_scores and chunk_id in chunk_contents]
+    
+#     if missing_chunks:
+#         logger.info(f"Calculating similarity for {len(missing_chunks)} missing chunks")
+#         try:
+#             # Get embeddings for missing chunks
+#             missing_contents = [chunk_contents[chunk_id] for chunk_id in missing_chunks]
+#             missing_embeddings = await embedding_func(missing_contents)
             
-#             if "data" in storage_data and "matrix" in storage_data:
-#                 try:
-#                     # Handle matrix format
-#                     if isinstance(storage_data["matrix"], str):
-#                         import base64
-#                         matrix_data = np.frombuffer(base64.b64decode(storage_data["matrix"]), dtype=np.float32)
-#                         embedding_dim = storage_data.get("embedding_dim", 1024)
-#                         matrix = matrix_data.reshape(-1, embedding_dim)
-#                     else:
-#                         matrix = storage_data["matrix"]
-                    
-#                     # Map embeddings to chunk IDs
-#                     for i, chunk_data in enumerate(storage_data["data"]):
-#                         if i < len(matrix) and "__id__" in chunk_data:
-#                             chunk_id = chunk_data["__id__"]
-#                             if chunk_id in all_unique_chunk_ids:
-#                                 all_chunk_embeddings[chunk_id] = matrix[i]
-                    
-#                     logger.info(f"Loaded {len(all_chunk_embeddings)} precomputed chunk embeddings")
-#                 except Exception as e:
-#                     logger.error(f"Error loading precomputed embeddings: {e}")
-        
-#         # Calculate embeddings for chunks without precomputed embeddings
-#         chunks_to_compute = []
-#         chunks_to_compute_ids = []
-        
-#         for chunk_id in all_unique_chunk_ids:
-#             if chunk_id not in all_chunk_embeddings and chunk_id in chunk_contents:
-#                 chunks_to_compute.append(chunk_contents[chunk_id])
-#                 chunks_to_compute_ids.append(chunk_id)
-        
-#         if chunks_to_compute:
-#             logger.info(f"Computing embeddings for {len(chunks_to_compute)} chunks")
-#             computed_embeddings = await embedding_func(chunks_to_compute)
-            
-#             for i, chunk_id in enumerate(chunks_to_compute_ids):
-#                 all_chunk_embeddings[chunk_id] = computed_embeddings[i]
-        
-#         # Calculate similarity scores manually
-#         def calculate_similarity(vec1, vec2):
-#             """Calculate cosine similarity between two vectors."""
-#             vec1 = np.squeeze(vec1)
-#             vec2 = np.squeeze(vec2)
-#             if vec1.ndim == 0 or vec2.ndim == 0 or vec1.shape[0] != vec2.shape[0]:
-#                 return 0.0
-#             dot_product = np.dot(vec1, vec2)
-#             norm_vec1 = np.linalg.norm(vec1)
-#             norm_vec2 = np.linalg.norm(vec2)
-#             if norm_vec1 == 0 or norm_vec2 == 0:
-#                 return 0.0
-#             return dot_product / (norm_vec1 * norm_vec2)
-        
-#         for chunk_id, chunk_embedding in all_chunk_embeddings.items():
-#             chunk_sim_scores[chunk_id] = calculate_similarity(query_embedding, chunk_embedding)
+#             for i, chunk_id in enumerate(missing_chunks):
+#                 similarity = calculate_similarity(query_embedding, missing_embeddings[i])
+#                 chunk_sim_scores[chunk_id] = similarity
+#         except Exception as e:
+#             logger.error(f"Error calculating missing chunk similarities: {e}")
     
-#     # Step 5: Calculate node score contributions for each chunk
-#     chunk_node_scores = defaultdict(list)
+#     # Step 10: Create mappings:
+#     # - chunk_id -> list of entities in that chunk
+#     # - chunk_id -> list of edges in that chunk
+#     chunk_to_entities = defaultdict(list)
+#     chunk_to_edges = defaultdict(list)
     
-#     for node in nodes:
-#         node_score = node.get('score', 0.0)
-#         # Ensure score is positive (higher is better)
-#         if isinstance(node_score, (int, float)) and node_score < 0:
-#             node_score = -node_score
-        
-#         node_chunks = node.get('all_kg_chunk_ids', [])
-        
-#         for chunk_id in node_chunks:
+#     # Map entities to chunks
+#     for entity_id, chunks in chunks_by_entity.items():
+#         for chunk_id in chunks:
 #             if chunk_id in all_unique_chunk_ids:
-#                 chunk_node_scores[chunk_id].append(node_score)
+#                 chunk_to_entities[chunk_id].append(entity_id)
     
-#     # Calculate average node score for each chunk
-#     avg_node_scores = {}
-#     for chunk_id, scores in chunk_node_scores.items():
-#         avg_node_scores[chunk_id] = sum(scores) / len(scores) if scores else 0.0
+#     # Map edges to chunks
+#     for edge_id, chunks in chunks_by_edge.items():
+#         for chunk_id in chunks:
+#             if chunk_id in all_unique_chunk_ids:
+#                 chunk_to_edges[chunk_id].append(edge_id)
+
+#     # ===== BẮT ĐẦU THÊM CODE CHO ĐỀ XUẤT 2 =====
+#     # Step 10.5: Calculate relevant counts for each chunk
+#     logger.info(f"Calculating relevant item counts using threshold: {relevance_threshold}")
+#     chunk_relevant_counts = defaultdict(int) # Dùng defaultdict cho tiện
+
+#     # Đếm relevant entities
+#     for chunk_id, entity_ids in chunk_to_entities.items():
+#         count = sum(1 for entity_id in entity_ids
+#                     if entity_similarities.get(entity_id, 0.0) > relevance_threshold)
+#         chunk_relevant_counts[chunk_id] += count
+
+#     # Đếm relevant edges
+#     for chunk_id, edge_ids in chunk_to_edges.items():
+#         count = sum(1 for edge_id in edge_ids
+#                     if edge_similarities.get(edge_id, 0.0) > relevance_threshold)
+#         chunk_relevant_counts[chunk_id] += count
+
+#     logger.info(f"Calculated relevant counts for {len(chunk_relevant_counts)} chunks")
+#     # ===== KẾT THÚC THÊM CODE CHO ĐỀ XUẤT 2 =====
+
+#     # Step 11: Calculate entity and edge scores for each chunk
+#     # Instead of averages, we use the sum of scores
+#     chunk_entity_scores = {}
+#     chunk_edge_scores = {}
     
-#     # Step 6: Normalize scores
+#     # Calculate sum of entity scores for each chunk
+#     for chunk_id, entity_ids in chunk_to_entities.items():
+#         entity_scores = [entity_similarities[entity_id] for entity_id in entity_ids if entity_id in entity_similarities]
+#         if entity_scores:
+#             chunk_entity_scores[chunk_id] = sum(entity_scores) / len(entity_scores)
+#             # chunk_entity_scores[chunk_id] = sum(entity_scores) 
+#         else:
+#             chunk_entity_scores[chunk_id] = 0.0
+    
+#     # Calculate sum of edge scores for each chunk
+#     for chunk_id, edge_ids in chunk_to_edges.items():
+#         edge_scores = [edge_similarities[edge_id] for edge_id in edge_ids if edge_id in edge_similarities]
+#         if edge_scores:
+#             # Use sum instead of average
+#             # chunk_edge_scores[chunk_id] = sum(edge_scores)
+#             chunk_edge_scores[chunk_id] = sum(edge_scores) / len(edge_scores)
+#         else:
+#             chunk_edge_scores[chunk_id] = 0.0
+    
+#     # Step 12: Normalize scores
 #     def normalize_scores(scores):
 #         if not scores:
 #             return {}
@@ -3708,31 +3943,69 @@ async def _most_relevant_text_chunks_from_edges(
 #             return {k: 1.0 for k in scores}
 #         return {k: (v - min_val) / range_val for k, v in scores.items()}
     
-#     normalized_sim_scores = normalize_scores(chunk_sim_scores)
-#     normalized_node_scores = normalize_scores(avg_node_scores)
+#     normalized_chunk_sim = normalize_scores(chunk_sim_scores)
+#     normalized_entity_scores = normalize_scores(chunk_entity_scores)
+#     normalized_edge_scores = normalize_scores(chunk_edge_scores)
     
-#     # Step 7: Combine scores using weighted sum
+#     import math
+#     # Step 13: Combine scores from all three sources
 #     final_scores = {}
 #     for chunk_id in all_unique_chunk_ids:
-#         if chunk_id in normalized_sim_scores and chunk_id in normalized_node_scores:
-#             final_scores[chunk_id] = (
-#                 a * normalized_sim_scores[chunk_id] + 
-#                 b * normalized_node_scores[chunk_id]
-#             )
+#         # Get component scores, using 0.0 for missing scores
+#         chunk_score = normalized_chunk_sim.get(chunk_id, 0.0)
+#         entity_score = normalized_entity_scores.get(chunk_id, 0.0)
+#         edge_score = normalized_edge_scores.get(chunk_id, 0.0)
+        
+#         # Combine using weighted sum (a + b + c should equal 1.0)
+#         # final_scores[chunk_id] = (
+#         #     a * chunk_score + 
+#         #     b * entity_score + 
+#         #     c * edge_score
+#         # )
+
+# # #################### New Method ######################
+#         base_score = (
+#             a * chunk_score +
+#             b * entity_score +
+#             c * edge_score
+#         )
     
-#     # Step 8: Get final chunk results with contents
+#         # ===== BẮT ĐẦU SỬA ĐỔI STEP 13 =====
+#         # Get the relevant count for this chunk
+#         relevant_count = chunk_relevant_counts.get(chunk_id, 0)
+
+#         # Calculate the modifier using a non-linear function (log1p)
+#         # math.log1p(x) tính ln(1 + x), đảm bảo kết quả >= 0 và xử lý x=0
+#         modifier = math.log1p(relevant_count)
+
+#         # Apply the modifier to the base score
+#         # Lựa chọn 1: Nhân (khuếch đại điểm) - Giống gợi ý trong tài liệu hơn
+#         # final_scores[chunk_id] = base_score * (1 + modifier)
+        
+#         density_bonus_weight = 0.1 # Có thể thêm một trọng số cho bonus
+#         final_scores[chunk_id] = base_score + density_bonus_weight * modifier
+#     # Step 14: Get final result chunks
 #     result_chunks = []
-#     for chunk_id, score in sorted(final_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]:
+#     sorted_chunks = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)[:top_k_chunks]
+    
+#     for chunk_id, score in sorted_chunks:
 #         if chunk_id in chunk_contents:
+#             doc_id = chunk_dict[chunk_id]['full_doc_id']
+#             doc_content = doc_dict[doc_id]['content']
 #             result_chunks.append({
 #                 "id": chunk_id,
-#                 "content": chunk_contents[chunk_id],
+#                 "chunk_content": chunk_contents[chunk_id],
+#                 "doc_id": doc_id,
+#                 "doc_content": doc_content,
 #                 "score": score,
-#                 "embedding_score": normalized_sim_scores.get(chunk_id, 0.0),
-#                 "node_score": normalized_node_scores.get(chunk_id, 0.0)
+#                 "chunk_sim": normalized_chunk_sim.get(chunk_id, 0.0),
+#                 "entity_score": normalized_entity_scores.get(chunk_id, 0.0),
+#                 "edge_score": normalized_edge_scores.get(chunk_id, 0.0),
+#                 "entities": chunk_to_entities.get(chunk_id, []),
+#                 "edges": chunk_to_edges.get(chunk_id, [])
 #             })
     
-#     logger.info(f"Enhanced chunk retrieval completed, returning {len(result_chunks)} chunks")
+#     logger.info(f"Enhanced direct chunk retrieval completed, returning {len(result_chunks)} chunks")
 #     return result_chunks
 
 
@@ -3740,39 +4013,51 @@ async def enhanced_chunk_retrieval_direct(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
+    relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     chunks_vdb: BaseVectorStorage,
     embedding_func: callable,
     chunk_dict,
     doc_dict,
-    a: float = 0.7,  # Weight for chunk-query similarity
-    b: float = 0.3,  # Weight for avg entity score
-    top_k_entities: int = 30,  # Number of top entities to consider
-    top_k_chunks: int = 10,  # Number of top chunks to return
-    use_precomputed_data: bool = True
+    a: float = 0.3,  # Weight for chunk-query similarity
+    b: float = 0.5,  # Weight for entity score
+    c: float = 0.5,  # Weight for edge score
+    top_k_entities: int = 200,  # Number of top entities to consider
+    top_k_edges: int = 200,    # Number of top edges to consider
+    top_k_chunks: int = 100,  # Number of top chunks to return
+    use_precomputed_data: bool = True,
+    relevance_threshold = 0.7,
+    method = None,
 ) -> List[Dict[str, Any]]:
     """
-    Enhanced retrieval that directly loads all entities and chunks.
+    Enhanced retrieval that directly loads all entities, edges, and chunks.
     
     Process:
     1. Calculate similarity between query and all entities
-    2. Select top entities by similarity
-    3. Get all chunks containing these top entities
-    4. For each chunk, calculate:
+    2. Calculate similarity between query and all edges
+    3. Select top entities and edges by similarity
+    4. Get all chunks containing these top entities and edges
+    5. For each chunk, calculate combined score using:
        - Similarity between chunk and query (weighted by a)
-       - Average similarity of all entities in that chunk (weighted by b)
-    5. Return top chunks by combined score
+       - Sum of entity scores in that chunk (weighted by b)
+       - Sum of edge scores in that chunk (weighted by c)
+    6. Return top chunks by combined score
     
     Args:
         query: User's query string
         knowledge_graph_inst: Graph storage instance
         entities_vdb: Vector database for entities
+        relationships_vdb: Vector database for relationships
         text_chunks_db: KV storage for text chunks
         chunks_vdb: Vector database for chunks
         embedding_func: Function to compute embeddings
+        chunk_dict: Dictionary of chunk information
+        doc_dict: Dictionary of document information
         a: Weight for chunk-query similarity
-        b: Weight for average entity score
+        b: Weight for entity score
+        c: Weight for edge score
         top_k_entities: Number of top entities to consider
+        top_k_edges: Number of top edges to consider
         top_k_chunks: Number of chunks to return
         use_precomputed_data: Whether to use precomputed embeddings
         
@@ -3816,15 +4101,6 @@ async def enhanced_chunk_retrieval_direct(
                         return 0.0
                     return dot_product / (norm_vec1 * norm_vec2)
                 
-                # Calculate similarity for all entities
-                # for i, entity_data in enumerate(storage_data["data"]):
-                #     if i < len(matrix) and "__id__" in entity_data:
-                #         entity_id = entity_data["__id__"]
-                #         entity_embedding = matrix[i]
-                #         similarity = calculate_similarity(query_embedding, entity_embedding)
-                #         entity_similarities[entity_id] = similarity
-                
-                # logger.info(f"Calculated similarity for {len(entity_similarities)} entities")
                 query_norm = np.linalg.norm(query_embedding)
                 if query_norm > 0:
                     normalized_query = query_embedding / query_norm
@@ -3909,45 +4185,170 @@ async def enhanced_chunk_retrieval_direct(
     sorted_entities = sorted(entity_similarities.items(), key=lambda x: x[1], reverse=True)
     top_entities = sorted_entities[:top_k_entities]
 
-    # Step 3.1: Sort entities by similarity and get top-k
     if not top_entities:
         logger.warning("No top entities found. Returning empty result.")
         return []
     
-
     logger.info(f"Selected top {len(top_entities)} entities")
     
-    # Step 4: Get chunks containing these top entities
+    # Step 4: Get edge similarities (relationships)
+    edge_similarities = {}
+    edge_info = {}
+    
+    # Use similar approach to get edge similarities
+    if use_precomputed_data and hasattr(relationships_vdb, "client_storage") and relationships_vdb.client_storage:
+        storage_data = relationships_vdb.client_storage
+        
+        if "data" in storage_data and "matrix" in storage_data:
+            try:
+                # Handle matrix format
+                if isinstance(storage_data["matrix"], str):
+                    import base64
+                    matrix_data = np.frombuffer(base64.b64decode(storage_data["matrix"]), dtype=np.float32)
+                    embedding_dim = storage_data.get("embedding_dim", 1024)
+                    matrix = matrix_data.reshape(-1, embedding_dim)
+                else:
+                    matrix = storage_data["matrix"]
+                
+                # Calculate similarity for all edges using matrix multiplication
+                query_norm = np.linalg.norm(query_embedding)
+                if query_norm > 0:
+                    normalized_query = query_embedding / query_norm
+                else:
+                    normalized_query = query_embedding
+                
+                norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+                norms[norms == 0] = 1.0
+                normalized_matrix = matrix / norms
+                
+                all_similarities = np.dot(normalized_matrix, normalized_query)
+                
+                for i, edge_data in enumerate(storage_data["data"]):
+                    if i < len(all_similarities) and "__id__" in edge_data:
+                        edge_id = edge_data["__id__"]
+                        src_id = edge_data.get("src_id", "")
+                        tgt_id = edge_data.get("tgt_id", "")
+                        edge_description = edge_data.get("description", "")
+                        edge_similarities[edge_id] = all_similarities[i]
+                        edge_info[edge_id] = {
+                            "src_id": src_id,
+                            "tgt_id": tgt_id,
+                            "description": edge_description
+                        }
+                
+                logger.info(f"Calculated similarity for {len(edge_similarities)} edges using matrix multiplication")
+            except Exception as e:
+                logger.error(f"Error calculating edge similarities: {e}")
+    
+    # If no edges found from precomputed data, query the VDB directly
+    if not edge_similarities:
+        logger.warning("No edge similarities calculated from precomputed data. Querying VDB directly.")
+        try:
+            # Query relationships VDB directly
+            relationships_results = await relationships_vdb.query(query, top_k=top_k_edges)
+            
+            for result in relationships_results:
+                edge_id = result.get("__id__")
+                if edge_id:
+                    # Store edge information
+                    src_id = result.get("src_id", "")
+                    tgt_id = result.get("tgt_id", "")
+                    edge_description = result.get("description", "")
+                    edge_info[edge_id] = {
+                        "src_id": src_id,
+                        "tgt_id": tgt_id,
+                        "description": edge_description
+                    }
+                    
+                    # For distance metrics (lower is better), convert to similarity
+                    if "distance" in result:
+                        edge_similarities[edge_id] = float(result["distance"])
+                    elif "score" in result:
+                        edge_similarities[edge_id] = float(result["score"])
+            
+            logger.info(f"Retrieved {len(edge_similarities)} edges using VDB query")
+        except Exception as e:
+            logger.error(f"Error querying relationships VDB: {e}")
+    
+    # Sort edges by similarity and get top-k
+    sorted_edges = sorted(edge_similarities.items(), key=lambda x: x[1], reverse=True)
+    top_edges = sorted_edges[:top_k_edges]
+    logger.info(f"Selected top {len(top_edges)} edges")
+    
+    # Step 5: Get chunks containing these top entities
     top_entity_ids = [entity_id for entity_id, _ in top_entities]
     chunks_by_entity = {}
-    all_chunks = set()  # To track unique chunks
     
     for entity_id in top_entity_ids:
         try:
             # Find all chunks containing this entity
             entity_name = entity_info[entity_id]["name"]
             node_data = await knowledge_graph_inst.get_node_data(entity_name)
-            entity_chunks = [chunk for chunk in list(node_data["source_id"].split("<SEP>"))]
-            # entity_chunks = await knowledge_graph_inst.get_chunks_for_entity(list_hash_id)
+            entity_chunks = [chunk for chunk in list(node_data["source_id"].split("<SEP>")) if chunk]
             chunks_by_entity[entity_id] = entity_chunks
             logger.debug(f"Entity {entity_id} is found in {len(entity_chunks)} chunks")
         except Exception as e:
             logger.error(f"Error getting chunks for entity {entity_id}: {e}")
             chunks_by_entity[entity_id] = []
     
-    # Step 5: Gather all unique chunks
+    # Step 6: Get chunks containing these top edges
+    top_edge_ids = [edge_id for edge_id, _ in top_edges]
+    chunks_by_edge = {}
+    
+    for edge_id in top_edge_ids:
+        try:
+            if edge_id in edge_info:
+                src_id = edge_info[edge_id]["src_id"]
+                tgt_id = edge_info[edge_id]["tgt_id"]
+                
+                # Get edge data to find chunks
+                try:
+                    edge_data = await knowledge_graph_inst.get_edge_data(src_id, tgt_id)
+                    if "source_id" in edge_data:
+                        edge_chunks = [chunk for chunk in list(edge_data["source_id"].split("<SEP>")) if chunk]
+                        chunks_by_edge[edge_id] = edge_chunks
+                        logger.debug(f"Edge {edge_id} is found in {len(edge_chunks)} chunks")
+                    else:
+                        logger.warning(f"No source_id found for edge {edge_id}")
+                        chunks_by_edge[edge_id] = []
+                except Exception as e:
+                    logger.error(f"Error getting edge data for {src_id}->{tgt_id}: {e}")
+                    # Try reverse direction
+                    try:
+                        edge_data = await knowledge_graph_inst.get_edge_data(tgt_id, src_id)
+                        if "source_id" in edge_data:
+                            edge_chunks = [chunk for chunk in list(edge_data["source_id"].split("<SEP>")) if chunk]
+                            chunks_by_edge[edge_id] = edge_chunks
+                            logger.debug(f"Edge {edge_id} (reverse) is found in {len(edge_chunks)} chunks")
+                        else:
+                            logger.warning(f"No source_id found for edge {edge_id} (reverse)")
+                            chunks_by_edge[edge_id] = []
+                    except Exception as e2:
+                        logger.error(f"Error getting edge data for reverse direction {tgt_id}->{src_id}: {e2}")
+                        chunks_by_edge[edge_id] = []
+        except Exception as e:
+            logger.error(f"Error getting chunks for edge {edge_id}: {e}")
+            chunks_by_edge[edge_id] = []
+    
+    # Step 7: Gather all unique chunks from both entities and edges
     all_unique_chunk_ids = set()
+    
+    # Add chunks from entities
     for entity_id, chunks in chunks_by_entity.items():
         all_unique_chunk_ids.update(chunks)
     
+    # Add chunks from edges
+    for edge_id, chunks in chunks_by_edge.items():
+        all_unique_chunk_ids.update(chunks)
+    
     if not all_unique_chunk_ids:
-        logger.warning("No chunks found containing the top entities. Returning empty result.")
+        logger.warning("No chunks found containing top entities or edges. Returning empty result.")
         return []
     
-    logger.info(f"Found {len(all_unique_chunk_ids)} unique chunks containing top entities")
+    logger.info(f"Found {len(all_unique_chunk_ids)} unique chunks from entities and edges")
     chunk_ids_list = list(all_unique_chunk_ids)
     
-    # Step 6: Get chunk contents
+    # Step 8: Get chunk contents
     chunk_contents = {}
     try:
         chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids_list)
@@ -3960,7 +4361,7 @@ async def enhanced_chunk_retrieval_direct(
     
     logger.info(f"Retrieved contents for {len(chunk_contents)} chunks")
     
-    # Step 7: Calculate chunk similarity to query
+    # Step 9: Calculate chunk similarity to query
     chunk_sim_scores = {}
     
     # Try using chunks VDB first
@@ -3996,25 +4397,69 @@ async def enhanced_chunk_retrieval_direct(
         except Exception as e:
             logger.error(f"Error calculating missing chunk similarities: {e}")
     
-    # Step 8: Map entities to chunks and calculate entity score for each chunk
-    # Create a mapping of chunk_id -> list of entities in that chunk
+    # Step 10: Create mappings:
+    # - chunk_id -> list of entities in that chunk
+    # - chunk_id -> list of edges in that chunk
     chunk_to_entities = defaultdict(list)
+    chunk_to_edges = defaultdict(list)
     
+    # Map entities to chunks
     for entity_id, chunks in chunks_by_entity.items():
         for chunk_id in chunks:
             if chunk_id in all_unique_chunk_ids:
                 chunk_to_entities[chunk_id].append(entity_id)
     
-    # Calculate average entity similarity score for each chunk
+    # Map edges to chunks
+    for edge_id, chunks in chunks_by_edge.items():
+        for chunk_id in chunks:
+            if chunk_id in all_unique_chunk_ids:
+                chunk_to_edges[chunk_id].append(edge_id)
+
+    # ===== BẮT ĐẦU THÊM CODE CHO ĐỀ XUẤT 2 =====
+    # Step 10.5: Calculate relevant counts for each chunk
+    logger.info(f"Calculating relevant item counts using threshold: {relevance_threshold}")
+    chunk_relevant_counts = defaultdict(int) # Dùng defaultdict cho tiện
+
+    # Đếm relevant entities
+    for chunk_id, entity_ids in chunk_to_entities.items():
+        count = sum(1 for entity_id in entity_ids
+                    if entity_similarities.get(entity_id, 0.0) > relevance_threshold)
+        chunk_relevant_counts[chunk_id] += count
+
+    # Đếm relevant edges
+    for chunk_id, edge_ids in chunk_to_edges.items():
+        count = sum(1 for edge_id in edge_ids
+                    if edge_similarities.get(edge_id, 0.0) > relevance_threshold)
+        chunk_relevant_counts[chunk_id] += count
+
+    logger.info(f"Calculated relevant counts for {len(chunk_relevant_counts)} chunks")
+    # ===== KẾT THÚC THÊM CODE CHO ĐỀ XUẤT 2 =====
+
+    # Step 11: Calculate entity and edge scores for each chunk
+    # Instead of averages, we use the sum of scores
     chunk_entity_scores = {}
+    chunk_edge_scores = {}
+    
+    # Calculate sum of entity scores for each chunk
     for chunk_id, entity_ids in chunk_to_entities.items():
         entity_scores = [entity_similarities[entity_id] for entity_id in entity_ids if entity_id in entity_similarities]
         if entity_scores:
             chunk_entity_scores[chunk_id] = sum(entity_scores) / len(entity_scores)
+            # chunk_entity_scores[chunk_id] = sum(entity_scores) 
         else:
             chunk_entity_scores[chunk_id] = 0.0
     
-    # Step 9: Normalize scores
+    # Calculate sum of edge scores for each chunk
+    for chunk_id, edge_ids in chunk_to_edges.items():
+        edge_scores = [edge_similarities[edge_id] for edge_id in edge_ids if edge_id in edge_similarities]
+        if edge_scores:
+            # Use sum instead of average
+            # chunk_edge_scores[chunk_id] = sum(edge_scores)
+            chunk_edge_scores[chunk_id] = sum(edge_scores) / len(edge_scores)
+        else:
+            chunk_edge_scores[chunk_id] = 0.0
+    
+    # Step 12: Normalize scores
     def normalize_scores(scores):
         if not scores:
             return {}
@@ -4028,17 +4473,112 @@ async def enhanced_chunk_retrieval_direct(
     
     normalized_chunk_sim = normalize_scores(chunk_sim_scores)
     normalized_entity_scores = normalize_scores(chunk_entity_scores)
+    normalized_edge_scores = normalize_scores(chunk_edge_scores)
     
-    # Step 10: Combine scores
+    import math
+    # Step 13: Combine scores from all three sources
     final_scores = {}
     for chunk_id in all_unique_chunk_ids:
-        if chunk_id in normalized_chunk_sim and chunk_id in normalized_entity_scores:
-            final_scores[chunk_id] = (
-                a * normalized_chunk_sim[chunk_id] + 
-                b * normalized_entity_scores[chunk_id]
+        # Get component scores, using 0.0 for missing scores
+        chunk_score = normalized_chunk_sim.get(chunk_id, 0.0)
+        entity_score = normalized_entity_scores.get(chunk_id, 0.0)
+        edge_score = normalized_edge_scores.get(chunk_id, 0.0)
+        
+        # Use different scoring methods based on the 'method' parameter
+        if method == "max":
+            # Get entities and edges for this chunk
+            entities = chunk_to_entities.get(chunk_id, [])
+            edges = chunk_to_edges.get(chunk_id, [])
+            
+            # Get raw entity scores above threshold
+            entity_scores_above_threshold = [
+                entity_similarities[entity_id]
+                for entity_id in entities 
+                if entity_id in entity_similarities and entity_similarities[entity_id] > relevance_threshold
+            ]
+            
+            # Get raw edge scores above threshold
+            edge_scores_above_threshold = [
+                edge_similarities[edge_id]
+                for edge_id in edges 
+                if edge_id in edge_similarities and edge_similarities[edge_id] > relevance_threshold
+            ]
+            
+            # Calculate max scores (if any) using raw values
+            max_entity_score = max(entity_scores_above_threshold) if entity_scores_above_threshold else 0
+            max_edge_score = max(edge_scores_above_threshold) if edge_scores_above_threshold else 0
+            raw_chunk_score = chunk_sim_scores.get(chunk_id, 0.0)
+            
+            # Calculate final score using raw values
+            final_scores[chunk_id] = a * max_entity_score + b * max_edge_score + c * chunk_score
+            
+        elif method == "max_top_k":
+            # Get entities and edges for this chunk
+            entities = chunk_to_entities.get(chunk_id, [])
+            edges = chunk_to_edges.get(chunk_id, [])
+            
+            # Lọc entity dựa trên điểm raw > threshold
+            entities_above_threshold = [
+                entity_id for entity_id in entities 
+                if entity_id in entity_similarities and entity_similarities[entity_id] > relevance_threshold
+            ]
+            
+            # Lọc edge dựa trên điểm raw > threshold
+            edges_above_threshold = [
+                edge_id for edge_id in edges 
+                if edge_id in edge_similarities and edge_similarities[edge_id] > relevance_threshold
+            ]
+            
+            # Lấy raw scores của entities vượt ngưỡng và sắp xếp
+            entity_raw_scores = [(entity_id, entity_similarities[entity_id]) 
+                              for entity_id in entities_above_threshold]
+            entity_raw_scores.sort(key=lambda x: x[1], reverse=True)
+            
+            # Lấy raw scores của edges vượt ngưỡng và sắp xếp
+            edge_raw_scores = [(edge_id, edge_similarities[edge_id])
+                            for edge_id in edges_above_threshold]
+            edge_raw_scores.sort(key=lambda x: x[1], reverse=True)
+            
+            # Lấy top 5 (hoặc tất cả nếu ít hơn 5) và tính trung bình
+            top_entity_scores = [score for _, score in entity_raw_scores[:5]]
+            top_edge_scores = [score for _, score in edge_raw_scores[:5]]
+            
+            # Lấy điểm raw của chunk - không dùng điểm chuẩn hóa
+            raw_chunk_score = chunk_sim_scores.get(chunk_id, 0.0)
+            
+            # Tính trung bình điểm raw cho entity và edge
+            avg_entity_score = sum(top_entity_scores) / len(top_entity_scores) if top_entity_scores else 0
+            avg_edge_score = sum(top_edge_scores) / len(top_edge_scores) if top_edge_scores else 0
+            
+            # Tính điểm cuối cùng chỉ dùng điểm raw
+            final_scores[chunk_id] = a * avg_entity_score + b * avg_edge_score + c * raw_chunk_score
+            
+        elif method == "new_function":
+            # Use the current implementation with the log1p modifier
+            base_score = (
+                a * chunk_score +
+                b * entity_score +
+                c * edge_score
             )
-    
-    # Step 11: Get final result chunks
+            
+            # Get the relevant count for this chunk
+            relevant_count = chunk_relevant_counts.get(chunk_id, 0)
+            
+            # Calculate the modifier using a non-linear function (log1p)
+            modifier = math.log1p(relevant_count)
+            
+            # Apply the modifier to the base score
+            final_scores[chunk_id] = base_score * (1 + modifier)
+            
+        else:  # method == None or any other value
+            # Use the original weighted sum formula (from commented code)
+            final_scores[chunk_id] = (
+                a * chunk_score + 
+                b * entity_score + 
+                c * edge_score
+            )
+
+    # Step 14: Get final result chunks
     result_chunks = []
     sorted_chunks = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)[:top_k_chunks]
     
@@ -4054,7 +4594,9 @@ async def enhanced_chunk_retrieval_direct(
                 "score": score,
                 "chunk_sim": normalized_chunk_sim.get(chunk_id, 0.0),
                 "entity_score": normalized_entity_scores.get(chunk_id, 0.0),
-                "entities": chunk_to_entities.get(chunk_id, [])
+                "edge_score": normalized_edge_scores.get(chunk_id, 0.0),
+                "entities": chunk_to_entities.get(chunk_id, []),
+                "edges": chunk_to_edges.get(chunk_id, [])
             })
     
     logger.info(f"Enhanced direct chunk retrieval completed, returning {len(result_chunks)} chunks")

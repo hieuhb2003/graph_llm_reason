@@ -5303,7 +5303,7 @@ Remember: The sequence of questions must form a clear chain where each answer be
         #         "content": chunk.get("content", ""),
         #         "entity_ids_in_chunk": entity_ids_in_chunk
         #     }
-
+            
         all_chunk_data = {}
         chunks = self.get_all_chunks()
         
@@ -6234,11 +6234,14 @@ Remember: The sequence of questions must form a clear chain where each answer be
         self,
         query: str,
         top_k: int = 5,
-        a: float = 1,
-        b: float = 0.3,
+        weight_chunk: float = 1,
+        weight_entity: float = 0.3,
+        weight_edge: float = 0.3,
         query_param: QueryParam = None,
         use_precomputed_data: bool = True,
         force_use_existing_embeddings: bool = True,
+        threshold: float = 0.7,
+        method = None
     ) -> list[dict]:
         """
         High-level method to retrieve document chunks using the enhanced retrieval method.
@@ -6268,11 +6271,14 @@ Remember: The sequence of questions must form a clear chain where each answer be
             self.a_retrieve_docs_with_enhanced_method(
                 query=query,
                 top_k=top_k,
-                a=a,
-                b=b,
+                a=weight_chunk,
+                b=weight_entity,
+                c=weight_edge,
                 # query_param=query_param,
                 use_precomputed_data=use_precomputed_data,
-                force_use_existing_embeddings=force_use_existing_embeddings
+                force_use_existing_embeddings=force_use_existing_embeddings,
+                method = method,
+                threshold=threshold
             )
         )
 
@@ -6282,9 +6288,12 @@ Remember: The sequence of questions must form a clear chain where each answer be
         top_k: int = 5,
         a: float = 0.7,
         b: float = 0.3,
+        c: float = 0.3,
         query_param: QueryParam = None,
         use_precomputed_data: bool = True,
         force_use_existing_embeddings: bool = True,
+        method=None,
+        threshold: float = 0.7
     ) -> list[dict]:
         """Async version of retrieve_docs_with_enhanced_method"""
         
@@ -6308,7 +6317,7 @@ Remember: The sequence of questions must form a clear chain where each answer be
             query=query,
             knowledge_graph_inst=self.chunk_entity_relation_graph,
             entities_vdb=self.entities_vdb,
-            # relationships_vdb=self.relationships_vdb,
+            relationships_vdb=self.relationships_vdb,
             text_chunks_db=self.text_chunks,
             chunks_vdb=self.chunks_vdb,
             embedding_func=self.embedding_func,
@@ -6318,9 +6327,13 @@ Remember: The sequence of questions must form a clear chain where each answer be
             # global_config=global_config,
             a=a,
             b=b,
+            c=c,
             top_k_entities=top_k,
+            top_k_edges=top_k,
             top_k_chunks=top_k,
-            use_precomputed_data=use_precomputed_data
+            use_precomputed_data=use_precomputed_data,
+            method=method,
+            relevance_threshold=threshold
         )
         
         return result_chunks
