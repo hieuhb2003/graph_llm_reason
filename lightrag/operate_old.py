@@ -2904,6 +2904,7 @@ async def retrieve_node_details_for_recall(
                 "entity_name": entity_name,
                 # "kg_description": kg_info["kg_description"], # Description tổng hợp từ KG node
                 "description": vdb_result["vdb_hit_description"], # Description cụ thể từ VDB hit
+                "hash_id": compute_mdhash_id(entity_name + vdb_result["vdb_hit_description"],prefix="ent-"),
                 "retrieved_chunk_id": vdb_result["retrieved_chunk_id"],
                 "score": vdb_result["score"],
                 "all_kg_chunk_ids": kg_info["all_kg_chunk_ids"],
@@ -3202,6 +3203,7 @@ async def retrieve_edge_details_for_recall(
             final_output.append({
                 "src_id": src_id,
                 "tgt_id": tgt_id,
+                "hash_id": compute_mdhash_id(src_id + tgt_id + vdb_result["vdb_hit_description"],prefix="rel-"),
                 # "kg_description": kg_info["kg_description"], # Desc từ KG
                 "description": vdb_result["vdb_hit_description"], # Desc từ VDB hit
                 "retrieved_chunk_id": vdb_result["retrieved_chunk_id"],
@@ -4018,9 +4020,9 @@ async def enhanced_chunk_retrieval_direct(
     text_chunks_db: BaseKVStorage,
     chunks_vdb: BaseVectorStorage,
     embedding_func: callable,  # Main embedding function for chunks
-    entity_embedding_func: callable = None,  # Specialized embedding function for entities/edges
     chunk_dict,
     doc_dict,
+    entity_embedding_func: callable = None,  # Specialized embedding function for entities/edges
     a: float = 0.3,  # Weight for chunk-query similarity
     b: float = 0.5,  # Weight for entity score
     c: float = 0.5,  # Weight for edge score
@@ -4075,6 +4077,9 @@ async def enhanced_chunk_retrieval_direct(
     if entity_embedding_func is None:
         entity_embedding_func = embedding_func
         logger.info("Using main embedding_func for entities and edges as entity_embedding_func was not provided")
+        
+    if predefined_candidates:
+        logger.info(f"Using predefined candidates: {len(predefined_candidates['entities'])} entities and {len(predefined_candidates['edges'])} edges")
     
     # Get query embeddings with both embedding functions
     # For entities and edges
@@ -4619,9 +4624,10 @@ async def enhanced_chunk_retrieval_direct(
             
             # Calculate the modifier using a non-linear function (log1p)
             modifier = math.log1p(relevant_count)
-            
+            density_bonus_weight = 0.1
             # Apply the modifier to the base score
-            final_scores[chunk_id] = base_score * (1 + modifier)
+            # final_scores[chunk_id] = base_score * (1 + modifier)
+            final_scores[chunk_id] = base_score + density_bonus_weight * modifier
             
         else:  # method == None or any other value
             # Use the original weighted sum formula (from commented code)

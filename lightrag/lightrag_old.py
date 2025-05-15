@@ -285,7 +285,7 @@ class LightRAG:
     cache_queries_file : str = field(default = None)
     cache_queries: dict = field(default = None)
     embedding_func_name : str = field(default = None)
-
+    embedding_func_name_chunks : str = field(default = None)
     kv_storage: str = field(default="JsonKVStorage")
     """Storage backend for key-value data."""
 
@@ -595,9 +595,23 @@ class LightRAG:
                 embedding_func=self.entity_embedding_func,  # Use entity_embedding_func for relationships
                 meta_fields={"src_id", "tgt_id"},
             )
-            self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
-                namespace=make_namespace(
-                    self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS+ "_" + self.embedding_func_name
+            # self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
+            #     namespace=make_namespace(
+            #         self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS+ "_" + self.embedding_func_name
+            #     ),
+            #     embedding_func=self.embedding_func,  # Use main embedding_func for chunks
+            # )
+            if self.embedding_func_name_chunks and check_exist_embedding_func(self.embedding_func_name_chunks, self.working_dir):
+                self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
+                    namespace=make_namespace(
+                        self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS+ "_" + self.embedding_func_name_chunks
+                    ),
+                    embedding_func=self.embedding_func,  # Use main embedding_func for chunks
+                )
+            else:
+                self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
+                    namespace=make_namespace(
+                        self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS
                 ),
                 embedding_func=self.embedding_func,  # Use main embedding_func for chunks
             )
@@ -618,12 +632,21 @@ class LightRAG:
                 embedding_func=self.entity_embedding_func,  # Use entity_embedding_func for relationships
                 meta_fields={"src_id", "tgt_id"},
             )
-            self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
-                namespace=make_namespace(
-                    self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS
+            if self.embedding_func_name_chunks and check_exist_embedding_func(self.embedding_func_name_chunks, self.working_dir):
+                self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
+                    namespace=make_namespace(
+                        self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS+ "_" + self.embedding_func_name_chunks
+                    ),
+                    embedding_func=self.embedding_func,  # Use main embedding_func for chunks
+                )
+            else:
+                self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
+                    namespace=make_namespace(
+                        self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS
                 ),
                 embedding_func=self.embedding_func,  # Use main embedding_func for chunks
             )
+            
 
         # Initialize document status storage
         self.doc_status: DocStatusStorage = self.doc_status_storage_cls(

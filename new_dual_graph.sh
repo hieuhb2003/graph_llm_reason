@@ -1,0 +1,52 @@
+python /home/hungpv/projects/draft/nanographrag/new_version_dual_graph.py \
+    --mode hybrid \
+    --graph1_path /home/hungpv/projects/TN/LIGHTRAG/new_nq_en_without_embedding \
+    --graph2_path /home/hungpv/projects/TN/LIGHTRAG/new_nq_vi_without_embedding \
+    --mapping_file /home/hungpv/projects/train_embedding/nanographrag/mapping_nq/element_mapping_bgem3_nq_vi_bgem3_nq_en_thresh0.9.json \
+    --graph1_name nq_en \
+    --graph2_name nq_vi \
+    --embedding_func_name bge-m3-list_des \
+    --embedding_func_name_chunks bge-m3-list_des \
+    --embedding_path BAAI/bge-m3 \
+    --devices "cuda:0" \
+    --corpus_file /home/hungpv/projects/TN/data/data_nq/filter_corpus_en.json \
+    --queries_file /home/hungpv/projects/TN/data/data_nq/dev_queries_vi.json \
+    --output_file /home/hungpv/projects/draft/nanographrag/bge_new_rerank_method/nq_q_vi_merge/query_vi_max_merge_result.json \
+    --need_edge 0.3 \
+    --method max \
+    --threshold 0.7
+
+python /home/hungpv/projects/draft/nanographrag/new_version_dual_graph.py \
+    --mode hybrid \
+    --graph1_path /home/hungpv/projects/TN/LIGHTRAG/new_nq_en_without_embedding \
+    --graph2_path /home/hungpv/projects/TN/LIGHTRAG/new_nq_vi_without_embedding \
+    --mapping_file /home/hungpv/projects/train_embedding/nanographrag/mapping_nq/element_mapping_bgem3_nq_vi_bgem3_nq_en_thresh0.9.json \
+    --graph1_name nq_en \
+    --graph2_name nq_vi \
+    --embedding_func_name bge-m3-list_des \
+    --embedding_func_name_chunks bge-m3-list_des \
+    --embedding_path BAAI/bge-m3 \
+    --devices "cuda:1" \
+    --corpus_file /home/hungpv/projects/TN/data/data_nq/filter_corpus_en.json \
+    --queries_file /home/hungpv/projects/TN/data/data_nq/dev_queries_vi.json \
+    --output_file /home/hungpv/projects/draft/nanographrag/bge_new_rerank_method/nq_q_vi_merge/query_vi_new_function_update_merge_result.json \
+    --need_edge 0.3 \
+    --method new_function \
+    --threshold 0.7
+
+python /home/hungpv/projects/draft/nanographrag/new_version_dual_graph.py \
+    --mode hybrid \
+    --graph1_path /home/hungpv/projects/TN/LIGHTRAG/new_nq_en_without_embedding \
+    --graph2_path /home/hungpv/projects/TN/LIGHTRAG/new_nq_vi_without_embedding \
+    --mapping_file /home/hungpv/projects/train_embedding/nanographrag/mapping_nq/element_mapping_bgem3_nq_vi_bgem3_nq_en_thresh0.9.json \
+    --graph1_name nq_en \
+    --graph2_name nq_vi \
+    --embedding_func_name bge-m3-list_des \
+    --embedding_func_name_chunks bge-m3-list_des \
+    --embedding_path BAAI/bge-m3 \
+    --devices "cuda:0" \
+    --corpus_file /home/hungpv/projects/TN/data/data_nq/filter_corpus_en.json \
+    --queries_file /home/hungpv/projects/TN/data/data_nq/dev_queries_vi.json \
+    --output_file /home/hungpv/projects/draft/nanographrag/bge_new_rerank_method/nq_q_vi_merge/query_vi_avg_merge_result.json \
+    --need_edge 0.3 \
+    --threshold 0.7
